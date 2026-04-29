@@ -1,0 +1,20 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+#macOs
+.DS_Store
+
+# Docker volumes if ever exported locally
+postgres_data/
+
+# Future large data files
+data/raw/
+*.jsonld
+*.ttl
+*.rdf
