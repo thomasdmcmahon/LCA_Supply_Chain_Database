@@ -27,9 +27,6 @@ LCA_Supply_Chain_Database/
     └── README.md
 ```
 
-### Database Schema
-![ER-diagram](schema/ER_diagram.pdf)
-
 ### Getting started
 
 Copy the environment template and set a password:
