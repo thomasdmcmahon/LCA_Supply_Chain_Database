@@ -70,17 +70,3 @@ Stores one score per process per impact category. For example: "flour milling co
 In a real pipeline these scores are calculated from exchanges multiplied by characterization factors. Here they're stored directly to avoid recalculating on every query. The unique constraint on `(process_id, impact_category_id)` ensures there's only ever one score per process per category.
 
 Connects to both `processes` and `impact_categories`.
-
-## Reading the ER diagram
-
-The crow's foot notation on the relationship lines means:
-
-- `||` — exactly one (mandatory)
-- `o{` — zero or many (optional many)
-- `||--o{` — "one process has zero or many exchanges" (a process with no exchanges would be empty, but the schema allows it).
-
-The most important relationships to understand are:
-
-- `processes ||--o{ exchanges` and `flows ||--o{ exchanges`: together these two relationships form the graph. An exchange can't exist without both a process and a flow.
-- `categories ||--o{ categories`: the self-join that enables the hierarchy.
-- `processes ||--o{ impact_results` and `impact_categories ||--o{ impact_results`: impact_results is the intersection table between processes and impact categories, storing the score for each combination.
