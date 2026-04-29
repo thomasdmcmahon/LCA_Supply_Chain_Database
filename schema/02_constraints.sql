@@ -93,7 +93,7 @@ COMMENT ON TABLE impact_results IS
     'Pre-aggregated LCIA scores per process per impact category. Derived from exchanges multiplied by characterization factors.';
 
 COMMENT ON COLUMN exchanges.is_reference_flow IS
-    'TRUE for the single output flow that defines the functional unit of this process. Each process should have exactly one reference flow.';
+    'TRUE for the output flow that defines the functional unit of this process. The database enforces at most one reference flow per process; validation should confirm that each process has at least one.';
 
 COMMENT ON COLUMN exchanges.amount IS
     'Quantity of the flow per one unit of the process reference flow. Stored with high precision to preserve small emission factors.';

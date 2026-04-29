@@ -1,0 +1,135 @@
+// LCA Supply Chain Database
+// File: ER_diagram.dbml
+// Description: DBML representation of the relational PostgreSQL schema
+//
+// The schema models LCA inventory data as a graph:
+// - processes are industrial or agricultural activities
+// - flows are substances, products, services, or emissions
+// - exchanges connect processes and flows with direction and amount
+// - impact_results store pre-calculated LCIA scores per process and impact category
+
+
+Enum flow_type_enum {
+  product
+  elementary
+  waste
+}
+
+Enum direction_enum {
+  input
+  output
+}
+
+
+Table geographies {
+  id integer [pk, increment]
+  code varchar(10) [not null, unique, note: 'Geography code, e.g. NO, GLO, RER, DE']
+  name varchar(255) [not null, note: 'Human-readable geography name']
+  is_global boolean [not null, default: false, note: 'TRUE if this represents a global average geography']
+}
+
+
+Table categories {
+  id integer [pk, increment]
+  name varchar(255) [not null]
+  parent_id integer [note: 'Optional parent category for hierarchical classification']
+  full_path text [note: 'Denormalized full category path, e.g. Agriculture/Crop production/Wheat']
+}
+
+
+Table processes {
+  id integer [pk, increment]
+  name varchar(500) [not null]
+  description text
+  geography_id integer
+  category_id integer
+  reference_year smallint [note: 'Year the process data represents']
+  source_dataset varchar(255) [note: 'Source dataset, e.g. Agribalyse 3.1']
+  external_id varchar(255) [unique, note: 'Original process identifier from the source dataset']
+  created_at timestamptz [not null, default: `now()`]
+}
+
+
+Table units {
+  id integer [pk, increment]
+  name varchar(50) [not null, unique, note: 'Unit symbol or name, e.g. kg, kWh, m3, MJ']
+  dimension varchar(50) [note: 'Physical dimension, e.g. mass, energy, volume, transport']
+}
+
+
+Table flows {
+  id integer [pk, increment]
+  name varchar(500) [not null]
+  description text
+  flow_type flow_type_enum [not null, note: 'product, elementary, or waste']
+  unit_id integer
+  cas_number varchar(20) [note: 'Chemical Abstracts Service registry number, e.g. 124-38-9 for CO2']
+  external_id varchar(255) [unique, note: 'Original flow identifier from the source dataset']
+  created_at timestamptz [not null, default: `now()`]
+}
+
+
+Table exchanges {
+  id integer [pk, increment]
+  process_id integer [not null]
+  flow_id integer [not null]
+  direction direction_enum [not null, note: 'input means consumed by the process; output means produced by the process']
+  amount numeric(20, 10) [not null, note: 'Quantity of the flow per one unit of the process reference flow']
+  unit_id integer
+  is_reference_flow boolean [not null, default: false, note: 'TRUE for the output flow that defines the functional unit of the process']
+  comment text
+  created_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    (process_id)
+    (flow_id)
+    (direction)
+    (process_id, direction)
+  }
+}
+
+
+Table impact_categories {
+  id integer [pk, increment]
+  name varchar(255) [not null, note: 'Human-readable impact category name, e.g. Climate change']
+  code varchar(50) [note: 'Short code, e.g. GWP100, AP, EP, CED']
+  method varchar(255) [note: 'Characterization method, e.g. CML 2002 or ReCiPe 2016']
+  unit varchar(50) [not null, note: 'Impact score unit, e.g. kg CO2-eq']
+  description text
+}
+
+
+Table impact_results {
+  id integer [pk, increment]
+  process_id integer [not null]
+  impact_category_id integer [not null]
+  value numeric(20, 10) [not null, note: 'LCIA score value for this process and impact category']
+  created_at timestamptz [not null, default: `now()`]
+
+  Indexes {
+    (process_id)
+    (impact_category_id)
+    (process_id, impact_category_id) [unique]
+  }
+}
+
+
+// Relationships
+
+Ref: categories.parent_id > categories.id [delete: set null]
+
+Ref: processes.category_id > categories.id [delete: set null]
+Ref: processes.geography_id > geographies.id [delete: set null]
+
+Ref: flows.unit_id > units.id [delete: set null]
+
+Ref: exchanges.process_id > processes.id [delete: cascade]
+Ref: exchanges.flow_id > flows.id [delete: restrict]
+Ref: exchanges.unit_id > units.id [delete: set null]
+
+Ref: impact_results.process_id > processes.id [delete: cascade]
+Ref: impact_results.impact_category_id > impact_categories.id [delete: cascade]
+
+Ref: "processes"."id" < "processes"."geography_id"
+
+Ref: "processes"."geography_id" < "processes"."category_id"
