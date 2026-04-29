@@ -72,6 +72,33 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_exchanges_one_reference_flow
     ON exchanges(process_id)
     WHERE is_reference_flow = TRUE;
 
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'uq_impact_categories_code_method'
+    ) THEN
+        ALTER TABLE impact_categories
+            ADD CONSTRAINT uq_impact_categories_code_method
+            UNIQUE (code, method);
+    END IF;
+END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_unique_parent_name
+    ON categories(parent_id, name)
+    WHERE parent_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_unique_root_name
+    ON categories(name)
+    WHERE parent_id IS NULL;
+
+/* Optional: enable only if duplicate process-flow-direction exchanges should never exist in the source data.
+
+ALTER TABLE exchanges
+    ADD CONSTRAINT uq_exchanges_process_flow_direction
+    UNIQUE (process_id, flow_id, direction);
+*/
 
 /*
 -- COMMENTS
