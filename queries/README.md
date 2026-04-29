@@ -1,6 +1,6 @@
 # Queries
 
-Analytical SQL queries against the LCA supply chain database. Each file is standalone and well-commented. Run them in order for a progressive walkthrough of the schema, or jump to any file individually.
+Analytical SQL queries against the LCA supply chain database and seed data. Each file is standalone and well-commented. Run them in order for a progressive walkthrough of the schema, or jump to any file individually.
 
 ## How to run
 
