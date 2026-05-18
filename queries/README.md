@@ -35,3 +35,7 @@ Joins pre-calculated LCIA scores to impact categories and ranks processes within
 ### `06_supply_chain_graph.sql`
 
 "The centerpiece query". A recursive CTE that walks the product flow graph upstream from flour milling, resolving which processes supplies each product input. Follows by a cradle-to-gate inventory rollup that scales and sums all upstream elementary emissions back to 1 kg of wheat flour as the functional unit.
+
+### `07_elcd_validation.sql`
+
+Validation checks for the ELCD 3.2 pipeline load. Confirms ELCD row counts, checks that each ELCD process has one reference flow, and runs a small joined sample across processes, exchanges, flows, and units.
