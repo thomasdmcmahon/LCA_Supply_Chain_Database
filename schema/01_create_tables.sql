@@ -221,8 +221,8 @@ CREATE TABLE exchanges (
 
     -- Quantity of the flow per one unit of the process reference flow.
     -- NUMERIC is used for precision because LCA data often contains very
-    -- small emission factors, including values far below 1e-10 in ELCD.
-    amount NUMERIC(38, 28) NOT NULL,
+    -- small emission factors, including values far below 1e-28 in ELCD.
+    amount NUMERIC(60, 50) NOT NULL,
 
     -- Unit used for this exchange amount.
     -- Usually matches the flow's default unit, but is kept here because

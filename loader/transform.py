@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -158,7 +159,29 @@ def build_units(unit_groups: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
             if unit.get("internal_id") == reference_internal_id:
                 reference_unit_by_group_uuid[group_uuid] = record
 
-    units = sorted(units_by_uuid.values(), key=lambda item: item["name"] or item["external_id"])
+    units = list(units_by_uuid.values())
+
+    # Some ILCD exports reuse short unit labels across different meanings
+    # (for example "a" can mean both area and time). Disambiguate only the
+    # collided names so the relational schema can keep units.name unique.
+    name_counts = Counter(item["name"] for item in units if item.get("name"))
+    for item in units:
+        name = item.get("name")
+        if not name or name_counts[name] == 1:
+            continue
+        group_name = item.get("source_unit_group_name") or item.get("dimension") or "unit"
+        item["name"] = f"{name} [{group_name}]"
+
+    # If a collision still remains after using the unit-group name, append a
+    # short external-id suffix as a final stable fallback.
+    disambiguated_counts = Counter(item["name"] for item in units if item.get("name"))
+    for item in units:
+        name = item.get("name")
+        if not name or disambiguated_counts[name] == 1:
+            continue
+        item["name"] = f"{name} ({item['external_id'][:8]})"
+
+    units = sorted(units, key=lambda item: item["name"] or item["external_id"])
     return units, units_by_uuid, reference_unit_by_group_uuid
 
 

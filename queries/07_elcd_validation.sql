@@ -11,9 +11,9 @@ Run with:
 ELCD ROW COUNTS
 Checks the size of the ELCD-loaded subset without mixing it up with the seed data.
 Expected:
-- processes = 7
-- flows = 47995
-- exchanges = 2278
+- processes = 608
+- flows = 65148
+- exchanges = 212153
 */
 SELECT 'processes' AS table_name, COUNT(*) AS row_count
 FROM processes
@@ -35,17 +35,18 @@ WHERE p.source_dataset = 'ELCD 3.2 via openLCA ILCD export';
 /*
 REFERENCE FLOW COUNT PER ELCD PROCESS
 Every loaded ELCD process should have exactly one reference flow.
-Expected: 7 rows, all with reference_flow_count = 1
+Expected: 608 rows, all with reference_flow_count = 1
 */
 SELECT
+    p.id AS process_id,
     p.name AS process,
     COUNT(*) AS reference_flow_count
 FROM exchanges e
 JOIN processes p ON p.id = e.process_id
 WHERE p.source_dataset = 'ELCD 3.2 via openLCA ILCD export'
   AND e.is_reference_flow = TRUE
-GROUP BY p.name
-ORDER BY p.name;
+GROUP BY p.id, p.name
+ORDER BY p.id;
 
 /*
 ELCD PROCESSES WITH NO REFERENCE FLOW
@@ -88,7 +89,7 @@ LIMIT 50;
 /*
 ELCD GEOGRAPHY DISTRIBUTION
 Shows where the currently loaded ELCD process subset is located.
-Expected: a small set of geography codes such as GLO, RER, LU, etc.
+Expected: a wider spread of geography codes, with some processes possibly having no mapped geography.
 */
 SELECT
     g.code,

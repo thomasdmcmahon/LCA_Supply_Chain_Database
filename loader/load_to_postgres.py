@@ -129,12 +129,12 @@ def assert_exchange_amount_precision(cursor) -> None:
     precision, scale = row
     if scale is None:
         return
-    if scale < 28:
+    if scale < 50:
         raise RuntimeError(
             "The database schema is using an outdated exchanges.amount precision "
             f"(NUMERIC({precision}, {scale})). ELCD exchange values require at least "
-            "28 decimal places. Reinitialize the database with the updated schema or run "
-            "ALTER TABLE exchanges ALTER COLUMN amount TYPE NUMERIC(38, 28);"
+            "50 decimal places. Reinitialize the database with the updated schema or run "
+            "ALTER TABLE exchanges ALTER COLUMN amount TYPE NUMERIC(60, 50);"
         )
 
 
@@ -304,6 +304,8 @@ def replace_exchanges(
     if process_ids:
         cursor.execute("DELETE FROM exchanges WHERE process_id = ANY(%s)", (process_ids,))
 
+    # Exact zeros in the source data violate the database constraint and do
+    # not add useful graph information, so skip them at load time.
     rows = [
         (
             process_id_by_external[item["process_external_id"]],
@@ -315,6 +317,7 @@ def replace_exchanges(
             item["comment"],
         )
         for item in exchanges
+        if item["amount"] not in (0, 0.0)
     ]
     inserted = 0
     for batch in chunked(rows, batch_size):
