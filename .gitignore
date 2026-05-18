@@ -7,17 +7,37 @@ __pycache__/
 *.pyo
 .venv/
 
-#macOs
+# macOS
 .DS_Store
 
 # Docker volumes if ever exported locally
 postgres_data/
 
-# Future large data files
-data/raw/
+# Personal notes
+DB_explanation.md
+
+# Raw and processed LCA datasets
+data/raw/**
+data/processed/**
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/raw/elcd_3_2/
+!data/raw/elcd_3_2/.gitkeep
+!data/raw/elcd_3_2/original_download/
+!data/raw/elcd_3_2/original_download/.gitkeep
+!data/raw/elcd_3_2/exported/
+!data/raw/elcd_3_2/exported/.gitkeep
+!data/raw/elcd_3_2/exported/ilcd/
+!data/raw/elcd_3_2/exported/ilcd/.gitkeep
+!data/raw/elcd_3_2/exported/jsonld/
+!data/raw/elcd_3_2/exported/jsonld/.gitkeep
+!data/processed/elcd_3_2/
+!data/processed/elcd_3_2/.gitkeep
+*.zolca
 *.jsonld
 *.ttl
 *.rdf
 
-# Personal notes
-DB_explanation.md
+# Loader logs
+*.log
+load.log
