@@ -131,6 +131,19 @@ python3 loader/load_to_postgres.py
 
 The last step expects the PostgreSQL container to already be running.
 
+### Makefile shortcuts
+
+There is also a small `Makefile` for the most common local commands:
+
+```bash
+make up
+make pipeline
+make validate
+make psql
+```
+
+Run `make help` to see the full list.
+
 ### Port conflict
 
 If port 5432 is already in use, change `POSTGRES_PORT` to `5433` in `.env` and restart the container.
