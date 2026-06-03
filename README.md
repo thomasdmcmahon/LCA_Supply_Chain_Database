@@ -1,4 +1,3 @@
-````markdown
 # Project Overview
 
 The **LCA Supply Chain Database** is a PostgreSQL-based data system for modelling product life cycles using Life Cycle Assessment data. It represents industrial supply chains as a graph of processes, flows, and exchanges, then layers environmental impact results on top so users can query how materials, emissions, resources, and impacts move through a product system.
@@ -276,4 +275,3 @@ The project includes:
 - A Python ELCD 3.2 parsing, transformation, and loading pipeline.
 - SQL queries for validation, inventory inspection, impact ranking, and recursive supply-chain traversal.
 - Documentation for schema design and data sources.
-````
