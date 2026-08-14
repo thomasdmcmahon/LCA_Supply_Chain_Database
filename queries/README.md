@@ -39,3 +39,15 @@ Joins pre-calculated LCIA scores to impact categories and ranks processes within
 ### `07_elcd_validation.sql`
 
 Validation checks for the ELCD 3.2 pipeline load. Confirms ELCD row counts, checks that each ELCD process has one reference flow, and runs a small joined sample across processes, exchanges, flows, and units.
+
+### `08_unit_conversion_checks.sql`
+
+Exercises `v_exchange_unit_flags` and `convert_amount()` (`schema/05_unit_conversions.sql`). Breaks down exchanges by unit status (matches flow default / convertible / incompatible / missing), surfaces incompatible exchanges for review, and sanity-checks `convert_amount()` against known seed unit conversions (kg↔t, kWh↔MJ, and a deliberately-incompatible mass→energy case that should return NULL).
+
+### `09_lcia_calculation_validation.sql`
+
+Validates the LCIA calculation engine (`schema/06_lcia_calculation.sql`) against the seed wheat-flour data: runs `calculate_direct_impacts()` per seed process against hand-computed expected values, persists them with `upsert_direct_impacts_for_all_processes()`, and shows the coverage gap (`v_elementary_flows_without_cf`). Does **not** reproduce the original hand-typed illustrative `impact_results` values — see the file header for why.
+
+### `10_supply_chain_rollup_examples.sql`
+
+Exercises the generic recursive rollup (`schema/07_supply_chain_rollup.sql`) against the same wheat-flour chain as `06_supply_chain_graph.sql`, cross-checked against that file's manually-written scaling factors and inventory. Also includes a depth-cap smoke test.

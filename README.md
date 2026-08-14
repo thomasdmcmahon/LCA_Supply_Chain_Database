@@ -123,6 +123,8 @@ erDiagram
     FLOWS ||--o{ EXCHANGES : moves_through
     PROCESSES ||--o{ IMPACT_RESULTS : scored_by
     IMPACT_CATEGORIES ||--o{ IMPACT_RESULTS : defines
+    IMPACT_CATEGORIES ||--o{ CHARACTERIZATION_FACTORS : defines
+    FLOWS ||--o{ CHARACTERIZATION_FACTORS : characterizes
 
     PROCESSES {
         int id
@@ -158,6 +160,15 @@ erDiagram
         int process_id
         int impact_category_id
         numeric value
+    }
+
+    CHARACTERIZATION_FACTORS {
+        int id
+        int impact_category_id
+        int flow_id
+        numeric factor
+        int unit_id
+        boolean is_placeholder
     }
 ```
 
@@ -252,6 +263,9 @@ flowchart TD
     Q4 --> Q5["05_impact_results_ranked.sql"]
     Q5 --> Q6["06_supply_chain_graph.sql"]
     Q6 --> Q7["07_elcd_validation.sql"]
+    Q7 --> Q8["08_unit_conversion_checks.sql"]
+    Q8 --> Q9["09_lcia_calculation_validation.sql"]
+    Q9 --> Q10["10_supply_chain_rollup_examples.sql"]
 ```
 
 The centerpiece is the recursive supply-chain query. It starts from a process, finds its product inputs, then finds upstream processes whose reference outputs match those inputs.
@@ -265,6 +279,30 @@ flowchart TD
     More --> Stop["Stop when no more resolvable product inputs"]
 ```
 
+### LCIA Calculation Engine
+
+`impact_results` no longer has to be typed by hand. `characterization_factors` (one row per elementary flow per impact category) plus a small set of SQL functions derive impact scores directly from exchanges:
+
+```mermaid
+flowchart LR
+    E["exchanges<br/>(elementary flows)"] --> CDI["calculate_direct_impacts()"]
+    CF["characterization_factors"] --> CDI
+    CDI --> UDI["upsert_direct_impacts_for_all_processes()"]
+    UDI --> IR["impact_results"]
+
+    SCSP["supply_chain_scaled_processes()"] --> SCI["supply_chain_inventory()"]
+    SCI --> CCGI["calculate_cradle_to_gate_impacts()"]
+    CF --> CCGI
+```
+
+`calculate_direct_impacts(process_id)` characterizes one process's own exchanges. `supply_chain_scaled_processes()` generalizes the recursive traversal above into a parameterized function with automatically computed scaling factors and cycle-safe termination (visited-process-id guard + depth cap); `supply_chain_inventory()` aggregates the scaled elementary flows across the whole upstream chain; `calculate_cradle_to_gate_impacts()` runs that inventory through the same characterization logic to score an entire cradle-to-gate system in one call.
+
+Only a handful of real, cited characterization factors are seeded (enough to validate the engine against the wheat-flour example) — see `schema/04_characterization_factors.sql` for exactly what's covered and where real factors for the rest of the ELCD-loaded flows should come from.
+
+### Unit Conversion
+
+`convert_amount(amount, from_unit_id, to_unit_id)` converts between units that share a conversion group (`units.unit_group_external_id`), or returns `NULL` for anything incompatible or unmodeled — never a wrong number. The calculation engine and the rollup both use it wherever an exchange's unit might not match the unit they need. `v_exchange_unit_flags` flags every exchange's unit against its flow's default unit for review (`queries/08_unit_conversion_checks.sql`).
+
 ## Current State
 
 The project includes:
@@ -273,5 +311,8 @@ The project includes:
 - Docker-based local database setup.
 - Seed data for local testing.
 - A Python ELCD 3.2 parsing, transformation, and loading pipeline. Amounts are carried as validated strings/`Decimal` end-to-end (never `float`) to preserve the precision of LCA-scale values; `loader/check_precision.py` (`make check-precision`) is a regression check that a known tiny ELCD amount round-trips exactly.
+- An LCIA calculation engine (`characterization_factors` + `calculate_direct_impacts()` / `calculate_cradle_to_gate_impacts()`) that derives `impact_results` from exchanges instead of requiring hand-typed values.
+- A unit conversion engine (`convert_amount()`, `v_exchange_unit_flags`) used by the calculation engine and the rollup wherever units might not already match.
+- A generic, parameterized recursive supply-chain rollup (`supply_chain_scaled_processes()` / `supply_chain_inventory()`) with automatic scaling and cycle-safe traversal.
 - SQL queries for validation, inventory inspection, impact ranking, and recursive supply-chain traversal.
 - Documentation for schema design and data sources.

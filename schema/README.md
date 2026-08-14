@@ -1,6 +1,6 @@
 # Schema
 
-This folder contains the SQL files and ER diagram that define the database. Run them in order: `01_create_tables.sql`, `02_constraints.sql`, then `03_seed_data.sql` if you want some test data to play with.
+This folder contains the SQL files and ER diagram that define the database. Run them in order: `01_create_tables.sql`, `02_constraints.sql`, then `03_seed_data.sql` if you want some test data to play with. `04_characterization_factors.sql` through `07_supply_chain_rollup.sql` add the LCIA calculation engine, the unit conversion engine, and the generic supply-chain rollup on top of that — see below.
 
 ## How the database works
 
@@ -67,6 +67,36 @@ Defines the environmental metrics. Things like GWP100 (global warming potential 
 
 Stores one score per process per impact category. For example: "flour milling contributes 0.512 kg CO2-eq per kg flour under GWP100 (CML 2002)."
 
-In a real pipeline these scores are calculated from exchanges multiplied by characterization factors. Here they're stored directly to avoid recalculating on every query. The unique constraint on `(process_id, impact_category_id)` ensures there's only ever one score per process per category.
+These scores can be hand-entered (the seed data does this) or derived from exchanges x characterization factors by the calculation engine below. Either way they're stored directly to avoid recalculating on every query. The unique constraint on `(process_id, impact_category_id)` ensures there's only ever one score per process per category.
 
 Connects to both `processes` and `impact_categories`.
+
+### `characterization_factors`
+
+Added in `04_characterization_factors.sql`. One row per elementary flow per impact category: `factor` says how much one unit of that flow contributes to that category's indicator (e.g. 1 kg CO2 contributes 1 kg CO2-eq to GWP100). A trigger enforces `flow_id` must reference an elementary flow, since characterizing a product or waste flow doesn't mean anything.
+
+This project only seeds a handful of real, cited factors for the flows in the seed wheat-flour data — see that file's header comment for exactly what's covered, what isn't, and where real factors for the rest of the ELCD-loaded flows should come from. `is_placeholder` exists to flag stand-in values if/when this table is bulk-loaded from a real CF database later; nothing seeded here uses it (everything seeded is a verified, cited number).
+
+Connects to `impact_categories` and `flows`.
+
+### LCIA calculation engine (`06_lcia_calculation.sql`)
+
+Functions and procedures that derive `impact_results` from `exchanges x characterization_factors` instead of typing them by hand:
+
+- `calculate_direct_impacts(process_id)` — read-only, one process's direct (gate-level) exchanges, grouped by impact category.
+- `upsert_direct_impacts(process_id)` / `upsert_direct_impacts_for_all_processes()` — persist the above into `impact_results`. The latter is one set-based statement covering every process, safe to rerun (upsert semantics), and only writes categories it actually computed a value for — it never overwrites a hand-typed value for a category it has no factors for.
+- `v_elementary_flows_without_cf` — a view listing elementary flows that are used in exchanges but have zero characterization factor coverage. Expected to list almost everything after a full ELCD load, since `characterization_factors` is seeded thin on purpose.
+
+### Unit conversion engine (`05_unit_conversions.sql`)
+
+Extends `units` with `unit_group_external_id` (the real conversion-compatibility key — NOT the free-text `dimension` column, see the file header for why), `to_base_unit_factor`, and `is_base_unit`. `convert_amount(amount, from_unit_id, to_unit_id)` converts between two units if they share a conversion group, and returns `NULL` (never raises) otherwise, so callers can filter/count unconvertible rows in ordinary set-based SQL. `v_exchange_unit_flags` applies this to every exchange against its flow's default unit and labels each one `matches_flow_default` / `convertible` / `incompatible` / `unit_missing`.
+
+For ELCD-loaded units, real per-unit conversion factors already exist in the source XML (each ILCD unit group's `meanValue`) but aren't wired into the loader yet — see the follow-up note in this file for exactly what's needed in `load_to_postgres.py`.
+
+### Supply-chain rollup (`07_supply_chain_rollup.sql`)
+
+Generalizes the manual example in `queries/06_supply_chain_graph.sql` into parameterized functions:
+
+- `supply_chain_scaled_processes(start_process_id, target_amount, max_depth)` — recursive upstream traversal with automatically computed scaling factors (no more hand-written `VALUES` lists), cycle-safe via a visited-process-id guard plus a depth cap.
+- `supply_chain_inventory(...)` — aggregates elementary exchanges across the whole scaled chain into one row per flow, normalized to each flow's default unit via `convert_amount()`.
+- `calculate_cradle_to_gate_impacts(...)` — runs that inventory through the same characterization logic as `calculate_direct_impacts()`, so a whole upstream supply chain can be scored in one call.
