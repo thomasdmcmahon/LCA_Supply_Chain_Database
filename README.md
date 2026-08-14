@@ -272,6 +272,6 @@ The project includes:
 - A normalized PostgreSQL schema for LCA inventory data.
 - Docker-based local database setup.
 - Seed data for local testing.
-- A Python ELCD 3.2 parsing, transformation, and loading pipeline.
+- A Python ELCD 3.2 parsing, transformation, and loading pipeline. Amounts are carried as validated strings/`Decimal` end-to-end (never `float`) to preserve the precision of LCA-scale values; `loader/check_precision.py` (`make check-precision`) is a regression check that a known tiny ELCD amount round-trips exactly.
 - SQL queries for validation, inventory inspection, impact ranking, and recursive supply-chain traversal.
 - Documentation for schema design and data sources.

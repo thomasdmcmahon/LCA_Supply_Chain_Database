@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +111,31 @@ def fetch_map(cursor, query: str, key_index: int = 0, value_index: int = 1) -> d
 
 def chunked(items: list[Any], size: int) -> list[list[Any]]:
     return [items[index:index + size] for index in range(0, len(items), size)]
+
+
+def to_decimal(value: Any) -> Decimal | None:
+    """Convert a parsed exchange amount to Decimal, never via float.
+
+    Amounts reach this point as the validated strings produced by
+    parse_ilcd.py's `parse_decimal_str` and passed through unchanged by
+    transform.py. If a `float` shows up here, it means a precision-losing
+    conversion was reintroduced upstream, so fail loudly instead of silently
+    rounding an LCA-scale value (see NUMERIC(60, 50) in schema/01_create_tables.sql).
+    """
+    if value is None:
+        return None
+    if isinstance(value, float):
+        raise TypeError(
+            "Exchange amount arrived as float, not str/Decimal. A precision-losing "
+            "float conversion was reintroduced upstream of load_to_postgres.py "
+            "(see loader/parse_ilcd.py:parse_decimal_str)."
+        )
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except InvalidOperation:
+        return None
 
 
 def assert_exchange_amount_precision(cursor) -> None:
@@ -291,7 +317,7 @@ def replace_exchanges(
     flow_id_by_external: dict[str, int],
     unit_id_by_external: dict[str, int],
     batch_size: int,
-) -> int:
+) -> dict[str, int]:
     # Treat exchanges as replaceable per loaded process so reruns stay simple
     # and we avoid duplicate edges.
     process_ids = sorted(
@@ -304,21 +330,36 @@ def replace_exchanges(
     if process_ids:
         cursor.execute("DELETE FROM exchanges WHERE process_id = ANY(%s)", (process_ids,))
 
-    # Exact zeros in the source data violate the database constraint and do
-    # not add useful graph information, so skip them at load time.
-    rows = [
-        (
-            process_id_by_external[item["process_external_id"]],
-            flow_id_by_external[item["flow_external_id"]],
-            item["direction"],
-            item["amount"],
-            unit_id_by_external.get(item["unit_external_id"]),
-            item["is_reference_flow"],
-            item["comment"],
+    # Amounts arrive as decimal-safe strings all the way from parse_ilcd.py;
+    # to_decimal() converts them to Decimal right here, immediately before
+    # they cross into psycopg2, so NUMERIC(60, 50)-scale values never pass
+    # through float. Exact zeros violate the database's nonzero-amount
+    # constraint and carry no graph information, so they're skipped here
+    # along with any amount that fails to parse (rather than silently
+    # inserted as NULL or truncated).
+    rows: list[tuple[Any, ...]] = []
+    skipped_zero_amount = 0
+    skipped_unparsable_amount = 0
+    for item in exchanges:
+        amount = to_decimal(item.get("amount"))
+        if amount is None:
+            skipped_unparsable_amount += 1
+            continue
+        if amount == 0:
+            skipped_zero_amount += 1
+            continue
+        rows.append(
+            (
+                process_id_by_external[item["process_external_id"]],
+                flow_id_by_external[item["flow_external_id"]],
+                item["direction"],
+                amount,
+                unit_id_by_external.get(item["unit_external_id"]),
+                item["is_reference_flow"],
+                item["comment"],
+            )
         )
-        for item in exchanges
-        if item["amount"] not in (0, 0.0)
-    ]
+
     inserted = 0
     for batch in chunked(rows, batch_size):
         execute_values(
@@ -332,7 +373,11 @@ def replace_exchanges(
             batch,
         )
         inserted += len(batch)
-    return inserted
+    return {
+        "inserted": inserted,
+        "skipped_zero_amount": skipped_zero_amount,
+        "skipped_unparsable_amount": skipped_unparsable_amount,
+    }
 
 
 def build_summary(data: dict[str, Any]) -> dict[str, Any]:
@@ -378,7 +423,7 @@ def main() -> int:
                 category_id_by_external,
                 args.batch_size,
             )
-            inserted_exchanges = replace_exchanges(
+            exchange_load_stats = replace_exchanges(
                 cursor,
                 data["exchanges"],
                 process_id_by_external,
@@ -398,7 +443,9 @@ def main() -> int:
             {
                 "loaded": True,
                 **summary,
-                "exchange_rows_inserted": inserted_exchanges,
+                "exchange_rows_inserted": exchange_load_stats["inserted"],
+                "exchange_rows_skipped_zero_amount": exchange_load_stats["skipped_zero_amount"],
+                "exchange_rows_skipped_unparsable_amount": exchange_load_stats["skipped_unparsable_amount"],
             },
             indent=2,
         )

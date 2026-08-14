@@ -4,6 +4,11 @@ This stage converts the parser output into table-oriented JSON artifacts that
 match the PostgreSQL schema more closely. It does not write to PostgreSQL yet;
 instead it resolves references and emits load-friendly records keyed by stable
 external identifiers.
+
+Numeric amounts (exchange `amount`, unit `conversion_to_reference`) arrive
+from parse_ilcd.py as validated strings, not `float`, to preserve LCA-scale
+precision. This stage only passes them through — do not cast them to `float`
+or do arithmetic on them here.
 """
 
 from __future__ import annotations

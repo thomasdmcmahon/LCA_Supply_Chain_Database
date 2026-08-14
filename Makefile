@@ -4,20 +4,21 @@ POSTGRES_USER := lca_user
 POSTGRES_DB := lca_supply_chain
 ILCD_DIR := data/raw/elcd_3_2/exported/ilcd/ILCD
 
-.PHONY: help up down reset inspect parse transform load pipeline validate psql
+.PHONY: help up down reset inspect parse transform load pipeline validate psql check-precision
 
 help:
 	@echo "Available targets:"
-	@echo "  make up         - start the PostgreSQL container"
-	@echo "  make down       - stop the PostgreSQL container"
-	@echo "  make reset      - rebuild the database volume from scratch"
-	@echo "  make inspect    - inspect the ILCD export folder"
-	@echo "  make parse      - parse ILCD XML into processed JSON"
-	@echo "  make transform  - transform parsed JSON into table-shaped JSON"
-	@echo "  make load       - load transformed ELCD data into PostgreSQL"
-	@echo "  make pipeline   - run inspect, parse, transform, and load"
-	@echo "  make validate   - run the ELCD validation SQL queries"
-	@echo "  make psql       - open a psql shell in the PostgreSQL container"
+	@echo "  make up               - start the PostgreSQL container"
+	@echo "  make down             - stop the PostgreSQL container"
+	@echo "  make reset            - rebuild the database volume from scratch"
+	@echo "  make inspect          - inspect the ILCD export folder"
+	@echo "  make parse            - parse ILCD XML into processed JSON"
+	@echo "  make transform        - transform parsed JSON into table-shaped JSON"
+	@echo "  make load             - load transformed ELCD data into PostgreSQL"
+	@echo "  make pipeline         - run inspect, parse, transform, and load"
+	@echo "  make validate         - run the ELCD validation SQL queries"
+	@echo "  make check-precision  - regression check: amounts round-trip without float rounding"
+	@echo "  make psql             - open a psql shell in the PostgreSQL container"
 
 up:
 	docker compose up -d
@@ -45,6 +46,9 @@ pipeline: inspect parse transform load
 
 validate:
 	docker compose exec -T $(POSTGRES_SERVICE) psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) < queries/07_elcd_validation.sql
+
+check-precision:
+	$(PYTHON) loader/check_precision.py
 
 psql:
 	docker compose exec $(POSTGRES_SERVICE) psql -U $(POSTGRES_USER) -d $(POSTGRES_DB)

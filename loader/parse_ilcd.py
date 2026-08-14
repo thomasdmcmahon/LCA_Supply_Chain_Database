@@ -4,6 +4,12 @@ This is the first real parser pass for the ELCD export. It intentionally
 stops short of loading data into PostgreSQL. Instead, it extracts the stable
 metadata and exchange links we need in order to design the transformation and
 loading stages around the real ILCD structure.
+
+Numeric amounts (exchange amounts, flow property mean values, unit mean
+values) are carried as validated strings, never as `float`. See
+`parse_decimal_str`. Downstream stages must preserve this: `transform.py`
+passes the strings through unchanged, and `load_to_postgres.py` converts them
+to `decimal.Decimal` immediately before they cross into psycopg2.
 """
 
 from __future__ import annotations
@@ -11,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 import xml.etree.ElementTree as ET
@@ -72,13 +79,28 @@ def first_descendant_text(element: ET.Element, names: list[str]) -> str | None:
     return None
 
 
-def parse_float(text: str | None) -> float | None:
+def parse_decimal_str(text: str | None) -> str | None:
+    """Validate a numeric string and return it unchanged, as a string.
+
+    ELCD amounts include LCA-scale tiny values (e.g. "5.38063410297918E-17")
+    that the database stores in a NUMERIC(60, 50) column. Routing them through
+    Python `float` rounds to the nearest float64 and permanently destroys that
+    precision before the data ever reaches the DB. This function never
+    constructs a `float`: it uses `Decimal` only to validate that the text is
+    a well-formed number, then returns the original stripped string so
+    parse/transform/load can carry it byte-for-byte into `decimal.Decimal` at
+    the point of insertion (see `to_decimal` in load_to_postgres.py).
+    """
     if text is None:
         return None
-    try:
-        return float(text)
-    except ValueError:
+    stripped = text.strip()
+    if not stripped:
         return None
+    try:
+        Decimal(stripped)
+    except InvalidOperation:
+        return None
+    return stripped
 
 
 def parse_process(path: Path) -> dict[str, Any]:
@@ -145,9 +167,9 @@ def parse_process(path: Path) -> dict[str, Any]:
                     "flow_uuid": None if flow_ref is None else flow_ref.attrib.get("refObjectId"),
                     "flow_name": first_descendant_text(flow_ref, ["shortDescription"]) if flow_ref is not None else None,
                     "direction": normalized_direction,
-                    "mean_amount": parse_float(element_text(find_child(exchange, "meanAmount"))),
-                    "resulting_amount": parse_float(element_text(find_child(exchange, "resultingAmount"))),
-                    "amount": parse_float(amount_text),
+                    "mean_amount": parse_decimal_str(element_text(find_child(exchange, "meanAmount"))),
+                    "resulting_amount": parse_decimal_str(element_text(find_child(exchange, "resultingAmount"))),
+                    "amount": parse_decimal_str(amount_text),
                     "unit_uuid": exchange.attrib.get("{http://openlca.org/ilcd-extensions}unitId"),
                     "property_uuid": exchange.attrib.get("{http://openlca.org/ilcd-extensions}propertyId"),
                 }
@@ -227,7 +249,7 @@ def parse_flow(path: Path) -> dict[str, Any]:
                     "internal_id": flow_property.attrib.get("dataSetInternalID"),
                     "flow_property_uuid": None if ref is None else ref.attrib.get("refObjectId"),
                     "flow_property_name": first_descendant_text(ref, ["shortDescription"]) if ref is not None else None,
-                    "mean_value": parse_float(element_text(find_child(flow_property, "meanValue"))),
+                    "mean_value": parse_decimal_str(element_text(find_child(flow_property, "meanValue"))),
                 }
             )
 
@@ -302,7 +324,7 @@ def parse_unit_group(path: Path) -> dict[str, Any]:
                     "internal_id": unit.attrib.get("dataSetInternalID"),
                     "uuid": unit.attrib.get("{http://openlca.org/ilcd-extensions}unitId"),
                     "name": first_descendant_text(unit, ["name"]),
-                    "mean_value": parse_float(first_descendant_text(unit, ["meanValue"])),
+                    "mean_value": parse_decimal_str(first_descendant_text(unit, ["meanValue"])),
                 }
             )
 

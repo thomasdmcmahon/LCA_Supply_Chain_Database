@@ -15,6 +15,7 @@ postgres_data/
 
 # Personal notes
 DB_explanation.md
+CLAUDE.md
 
 # Raw and processed LCA datasets
 data/raw/**
