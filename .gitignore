@@ -42,3 +42,7 @@ data/processed/**
 # Loader logs
 *.log
 load.log
+
+# docs
+docs/future_docs.DS_Store
+.DS_Store
