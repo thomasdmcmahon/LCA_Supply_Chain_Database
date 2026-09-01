@@ -65,8 +65,8 @@ SELECT
     ir.value,
     ir.created_at
 FROM impact_results ir
-JOIN processes p ON p.id = ir.process_id
-JOIN impact_categories ic ON ic.id = ir.impact_category_id
+    JOIN processes p ON p.id = ir.process_id
+    JOIN impact_categories ic ON ic.id = ir.impact_category_id
 WHERE p.source_dataset = 'Seed data (illustrative)'
 ORDER BY p.id, ic.code;
 
@@ -81,8 +81,8 @@ SELECT flow_name, unit_name
 FROM v_elementary_flows_without_cf
 WHERE flow_id IN (
     SELECT DISTINCT e.flow_id
-    FROM exchanges e
+FROM exchanges e
     JOIN processes p ON p.id = e.process_id
-    WHERE p.source_dataset = 'Seed data (illustrative)'
+WHERE p.source_dataset = 'Seed data (illustrative)'
 )
 ORDER BY flow_name;
