@@ -1,21 +1,16 @@
 /*
-- LCA Supply Chain Database
-- File: 01_create_tables.sql
-- Description: Core table definitions for LCA inventory data
+LCA Supply Chain Database, core tables
 
--- Execution order: run this file first, before 02_constraints.sql
+Run first before 02_constraints.sql. Docker compose excecutes everything in schema/ in filename order when the Postgres volume is empty.
 
---- ENUMERATIONS ---
-Defined as custom PostgreSQL enum types to enforce valid values at the database level.
+The model is directed graph: processes are nodes, flows are what moves, exchanges are the edges. 
+*/
 
-flow_type_enum:
-- product: goods or services exchanged between processes
-- elementary: flows crossing the system boundary between the technosphere and nature
-- waste: outputs routed to waste treatment processes
 
-direction_enum:
-- input: the process consumes this flow
-- output: the process produces this flow
+/*
+Enums: these value sets are ficed by the LCA model, not by the data, so the database should reject everything else.
+
+flow_type matters for traversal. Product and waste flows stay inside the technosphere and connect processes to each otehr, so they can be followed upstream. Elementary flows cross into nature and are dead ends (they are what impact assessment is computed from).
 */
 CREATE TYPE flow_type_enum AS ENUM('product', 'elementary', 'waste');
 
@@ -23,231 +18,197 @@ CREATE TYPE direction_enum AS ENUM('input', 'output');
 
 
 /*
---- Table 'geographies' ---
-Represents the location or region associated with a process.
+Where a process is located. Its own table so codes are not repeated as strings across thousands of rows, and so datasets can be filtered by region.
 
-Examples:
-- NO: Norway
-- GLO: Global
-- RER: Europe
-
-Kept as a separate table to avoid repeated geography strings and to make
-future filtering by country, region, or global dataset easier.
+ELCD uses ISO country codes plus aggregates like RER (Europe) and GLO (global average).
 */
 CREATE TABLE geographies (
     id SERIAL PRIMARY KEY,
-
-    -- Short geography code, e.g. 'NO', 'GLO', 'RER', 'DE'
-    code VARCHAR(10) NOT NULL UNIQUE,
-
-    -- Human-readable geography name, e.g. 'Norway', 'Global', 'Europe'
-    name VARCHAR(255) NOT NULL,
-
-    -- TRUE when the geography represents a global average dataset
+    code VARCHAR(10) NOT NULL UNIQUE, -- 'NO', 'DE', 'RER', 'GLO', ...
+    name VARCHAR(255) NOT NULL, -- 'Norway', 'Europe'
     is_global BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 
 /*
---- Table 'categories' ---
-Hierarchical classification for processes.
+Sector classification for processes, e.g. Agriculture > Crop production > wheat.
 
-Examples:
-- Agriculture > Crop production > Wheat
-- Transport > Road freight
-- Food processing > Milling
-
-The self-referencing parent_id allows arbitrary category depth without
-hard-coding a fixed hierarchy.
+parent_id is self-referencing so the hierarchy can be any depth (source datasets do not agree on how many levels they use). full_path duplicates that information as a string; it is denormalized on purpoose, because displaying and filtering a path is far cheaper than walking the tree every time.
 */
 CREATE TABLE categories (
     id SERIAL PRIMARY KEY,
-
-    -- Category name at this hierarchy level
     name VARCHAR(255) NOT NULL,
-
-    -- Optional parent category for nested category trees
     parent_id INT REFERENCES categories(id) ON DELETE SET NULL,
-
-    -- Denormalized full path for easier display and filtering,
-    -- e.g. 'Agriculture/Crop production/Wheat'
-    full_path TEXT
+    full_path TEXT -- 'Agriculture/Crop production/Wheat'
 );
 
 
 /*
---- Table 'processes' ---
-The central entity in the database.
+Proceeses: the nodes of the graph
 
-Each row represents one industrial, agricultural, transport, or service activity.
-In the LCA supply chain graph, processes are the nodes.
-
-A process transforms input flows into output flows.
+One row is one activity that turns inputs into outputs
+growing wheat, milling it, hauling it, generating the electricity to power the mill.
 */
 CREATE TABLE processes (
     id SERIAL PRIMARY KEY,
-    name VARCHAR(500) NOT NULL, -- Process name, e.g. 'wheat grain production, conventional'
-    description TEXT, -- Optional longer process description or metadata summary
-    category_id INT REFERENCES categories(id) ON DELETE SET NULL, -- Optional classification category
-    geography_id INT REFERENCES geographies(id) ON DELETE SET NULL, -- Optional process geography
-    reference_year SMALLINT, -- Year the dataset represents, e.g. 2020
-    source_dataset VARCHAR(255), -- Source database or dataset name, e.g. 'Agribalyse 3.1'
-    external_id VARCHAR(255) UNIQUE, -- Original process identifier from the source dataset,e.g. an OpenLCA, Agribalyse, or ecoinvent UUID
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW() -- Timestamp for when this row was loaded into the local database
-);
-
-
-/*
---- Table 'units' ---
-Physical units of measurement.
-Examples: kg, kWh, m3, MJ, tkm
-
-Separated from flows so unit metadata and future unit conversion logic
-can be managed centrally.
-*/
-CREATE TABLE units (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(50) NOT NULL UNIQUE, -- Unit symbol or name, e.g. 'kg', 'kWh', 'm3', 'MJ'
-    dimension VARCHAR(50) -- Physical dimension, e.g. 'mass', 'energy', 'volume', 'transport'
-);
-
-
-/*
---- Table 'flows' ---
-A flow is any substance, energy carrier, product, waste, or service that moves
-between processes or between a process and the environment.
-In the LCA graph, flows label the physical exchanges connected to processes.
-
-Flow types:
-- product/waste flows belong to the technosphere and connect processes
-- elementary flows cross the system boundary, e.g. emissions to air or water
-*/
-
-CREATE TABLE flows (
-    id SERIAL PRIMARY KEY,
-
-    -- Flow name, e.g. 'carbon dioxide, fossil' or 'wheat grain'
-    name VARCHAR(500) NOT NULL,
-
-    -- Optional longer description of the flow
+    name VARCHAR(500) NOT NULL, 
     description TEXT,
 
-    -- Flow category enforced by enum:
-    -- 'product', 'elementary', or 'waste'
-    flow_type flow_type_enum NOT NULL,
+    category_id INT REFERENCES categories(id) ON DELETE SET NULL,
+    geography_id INT REFERENCES geographies(id) ON DELETE SET NULL,
 
-    -- Default unit for this flow
-    unit_id INT REFERENCES units(id) ON DELETE SET NULL,
+    reference_year SMALLINT, -- Year the dataset describes
 
-    -- Chemical Abstracts Service registry number,
-    -- useful for linking chemical flows to external databases
-    -- Example: '124-38-9' for carbon dioxide
-    cas_number VARCHAR(20),
+    /* Which dataset this row came from, so seed data and imported data
+    can be told apart in queries: 'Seed data (illustrative)' or
+    'ELCD 3.2 via openLCA ILCD export'*/
+    source_dataset VARCHAR(255),
 
-    -- Original flow identifier from the source dataset
+    /* The source dataset's own identifier (a UUID in ILCD).
+    Unique so a re-run of the loader updates the existing row instead
+    of duplicating it. NULL for hand-written seed data, which has no
+    upstream source.
+    */
     external_id VARCHAR(255) UNIQUE,
 
-    -- Timestamp for when this row was loaded into the local database
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 
 /*
---- Table 'exchanges' ---
-The edges of the LCA inventory graph.
+Units of measurement.
 
-Each exchange links:
-- one process
-- one flow
-- one direction
-- one amount
+Note on 'dimension': it is a descriptive label only, inferred from
+unit group names, and is NOT safe to use for deciding whether two
+units can convert into each other. Two unrelated groups can end up
+with the same label without sharing a reference point. Real convertability
+is decideded by unit_group_external_id()
+*/
+CREATE TABLE units (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(50) NOT NULL UNIQUE, -- 'kg', 'MJ', 'm2', 'tkm'
+    dimension VARCHAR(50) -- label only (see comment above)
+);
 
-Examples:
-- A wheat farming process outputs 1 kg wheat grain
-- A flour milling process inputs 1.2 kg wheat grain
-- A process outputs 0.1 kg CO2 to air
 
-is_reference_flow marks the output flow that defines the functional unit
-of a process, e.g. '1 kg flour'. Domain constraints for reference flows
-are added in 02_constraints.sql.
+/*
+Flows: anything that moves. A product between two factories, an
+emission into the air, a resoruce taken out of the ground, waste sent
+to treatment ...
+
+Flows are shared lookup rows, not owned by any one process. The same
+'carbon dioxide, fossil' row is referneced by every process that emits it.
+*/
+CREATE TABLE flows (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(500) NOT NULL,
+    description TEXT,
+    flow_type flow_type_enum NOT NULL,
+
+   /*The unit this flow is normally measured in. An individual
+   exchange may use a different but compatible unit (see exchanges.unit_id).
+   */
+    unit_id INT REFERENCES units(id) ON DELETE SET NULL,
+
+   /*
+   CAS registry number, e.g. '124-38-9' cor carbon dioxide. This is the
+   only reliable way to tell that two differnly-named or duplicated flow
+   rows are the same substance (ELCD ships several entries fro fossil
+   CO2, all sharing this same number). Not every flow has one:
+   resource extraction and land use have no CAS
+   */
+    cas_number VARCHAR(20),
+
+
+    external_id VARCHAR(255) UNIQUE, -- source dataset UUID
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+/*
+Exchanges: the edges. One row says that one process consumes or produces
+one flow, in one amount.
+
+Every amount is expressed per one unit of the process's own reference flow.
+
+That convention is what makes the supply chain computable: scaling an upstream process is just "amount I need" divided by "amount it produces".
 */
 CREATE TABLE exchanges (
     id SERIAL PRIMARY KEY,
 
-    -- Process that consumes or produces the flow
+    /*
+    CASCADE: an exchange has no meaning without its process. Delete the
+     mill and the rows describing what the mill consumed should go too.
+    */
     process_id INT NOT NULL REFERENCES processes(id) ON DELETE CASCADE,
 
-    -- Flow being consumed or produced
+    /*
+    RESTRICT: flows are shared lookups. Deleting the CO2 row should
+    not also delete every CO2 emission in the database.
+    */
     flow_id INT NOT NULL REFERENCES flows(id) ON DELETE RESTRICT,
 
-    -- Whether this flow is an input to or output from the process
     direction direction_enum NOT NULL,
 
-    -- Quantity of the flow per one unit of the process reference flow.
-    -- NUMERIC is used for precision because LCA data often contains very
-    -- small emission factors, including values far below 1e-28 in ELCD.
+    /*
+    NUMERIC(60, 50) because LCA inventories contain extremely small 
+    values. ELCD has amount below 1e-28. The loader preserves this by carrying amounts as texts through the pipeline and convert to instance of Decimal never through float.
+    */
     amount NUMERIC(60, 50) NOT NULL,
 
-    -- Unit used for this exchange amount.
-    -- Usually matches the flow's default unit, but is kept here because
-    -- source datasets may express exchanges in different compatible units.
+   /*
+   Unit for this specific amount. Usually the flow's default, but source
+   datasets sometimes express the same flow in a different compatible unit so it is recorded per exchange rathr than inherited.
+   */
     unit_id INT REFERENCES units(id) ON DELETE SET NULL,
 
-    -- TRUE for the output flow that defines the functional unit of the process
+    -- 02_constraints.sql: at most one per process, and it must be an output.
     is_reference_flow BOOLEAN NOT NULL DEFAULT FALSE,
 
-    -- Optional notes from the source dataset or loader
-    comment TEXT,
 
-    -- Timestamp for when this row was loaded into the local database
+    comment TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 
 /*
---- Table 'impact_categories' ---
-Environmental impact metrics used in Life Cycle Impact Assessment, LCIA.
+Impact categories: the environmental questiosn the inventory can be 
+scored against (climate change, acidiciation, eutrophication).
 
-Examples:
-- GWP100: global warming potential over 100 years
-- AP: acidification potential
-- EP: eutrophication potential
-- CED: cumulative energy demand
-
-The method column stores the characterization method, e.g. 'CML 2002'
-or 'ReCiPe 2016'. Different methods can produce different scores for
-the same inventory data.
+Note on method: the same emission scored under method CML 2 and under method Accumulated Exceedance gives different numbers in different units,
+so a category is only meaningful together with the method it belongs to.
 */
-
 CREATE TABLE impact_categories (
     id SERIAL PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,-- Human-readable impact category name, e.g. 'Climate change'
-    code VARCHAR(50), -- Short code, e.g. 'GWP100', 'AP', 'EP', 'CED'
-    method VARCHAR(255), -- Characterization method, e.g. 'CML 2002' or 'ReCiPe 2016'
-    unit VARCHAR(50) NOT NULL, -- Unit of the impact score, e.g. 'kg CO2-eq', 'kg SO2-eq'
-    description TEXT -- Optional explanation of the impact category
+    name VARCHAR(255) NOT NULL, -- 'Climate change', ...
+    code VARCHAR(50), --  'GWP100', 'AP', ...
+    method VARCHAR(255), -- 'CML 2002', 'Accumulated Exceedance', ...
+    unit VARCHAR(50) NOT NULL, --  'kg CO2-eq', 'molc H+ eq'
+    description TEXT
 );
 
 
 /*
---- Table 'impact_results' ---
-Pre-calculated environmental impact scores per process and impact category.
-These are derived values, normally calculated as:
+Impact results: what a process scores in a given category.
+Derived, not source data. Each value is the sum over the process's
+elementary flows of (exchange amount * characterization factor).
+so 2 kg of methane at a GWP100 factor of 28 contibues 56 kg of CO2-eq.
 
-    exchange amount × characterization factor
+Stored rather than computed on every query, which is also how msot LCA
+databases distribute their results. Populated upsert_direct_impacts_for_all_processes().
 
-summed over relevant elementary flows for each process and impact category.
+Precision is lower than exchanges.amount because individual emissions
+can be near 1e-17, gut an aggregated score is in the order of kilograms.
+The trade-off is that a score below 1e-10 rounds to zero here.
 
-(Insert example formula)
-
-Storing impact results avoids recalculating LCIA scores on every query and
-matches how many LCA databases distribute pre-aggregated impact results.
 */
 CREATE TABLE impact_results (
     id SERIAL PRIMARY KEY,
-    process_id INT NOT NULL REFERENCES processes(id) ON DELETE CASCADE, -- Process being scored
-    impact_category_id INT NOT NULL REFERENCES impact_categories(id) ON DELETE CASCADE, -- Impact category being measured
-    value NUMERIC(20, 10) NOT NULL, -- LCIA score value for this process and impact category
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), -- Timestamp for when this result was loaded or calculated
-    UNIQUE (process_id, impact_category_id) -- Ensures one score per process per impact category
+    process_id INT NOT NULL REFERENCES processes(id) ON DELETE CASCADE,
+    impact_category_id INT NOT NULL REFERENCES impact_categories(id) ON DELETE CASCADE, 
+    value NUMERIC(20, 10) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    
+    -- One score per process per category. Recalculation updates in place.
+    UNIQUE (process_id, impact_category_id) 
 );
