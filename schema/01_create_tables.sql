@@ -8,9 +8,9 @@ The model is directed graph: processes are nodes, flows are what moves, exchange
 
 
 /*
-Enums: these value sets are ficed by the LCA model, not by the data, so the database should reject everything else.
+Enums: these value sets are fixed by the LCA model, not by the data, so the database should reject everything else.
 
-flow_type matters for traversal. Product and waste flows stay inside the technosphere and connect processes to each otehr, so they can be followed upstream. Elementary flows cross into nature and are dead ends (they are what impact assessment is computed from).
+flow_type matters for traversal. Product and waste flows stay inside the technosphere and connect processes to each other, so they can be followed upstream. Elementary flows cross into nature and are dead ends (they are what impact assessment is computed from).
 */
 CREATE TYPE flow_type_enum AS ENUM('product', 'elementary', 'waste');
 
@@ -44,9 +44,9 @@ CREATE TABLE categories (
 
 
 /*
-Proceeses: the nodes of the graph
+Processes: the nodes of the graph
 
-One row is one activity that turns inputs into outputs
+One row is one activity that turns inputs into outputs.
 growing wheat, milling it, hauling it, generating the electricity to power the mill.
 */
 CREATE TABLE processes (
@@ -93,7 +93,7 @@ CREATE TABLE units (
 
 /*
 Flows: anything that moves. A product between two factories, an
-emission into the air, a resoruce taken out of the ground, waste sent
+emission into the air, a resource taken out of the ground, waste sent
 to treatment ...
 
 Flows are shared lookup rows, not owned by any one process. The same
@@ -111,8 +111,8 @@ CREATE TABLE flows (
     unit_id INT REFERENCES units(id) ON DELETE SET NULL,
 
    /*
-   CAS registry number, e.g. '124-38-9' cor carbon dioxide. This is the
-   only reliable way to tell that two differnly-named or duplicated flow
+   CAS registry number, e.g. '124-38-9' for carbon dioxide. This is the
+   only reliable way to tell that two differently-named or duplicated flow
    rows are the same substance (ELCD ships several entries fro fossil
    CO2, all sharing this same number). Not every flow has one:
    resource extraction and land use have no CAS
@@ -138,7 +138,7 @@ CREATE TABLE exchanges (
 
     /*
     CASCADE: an exchange has no meaning without its process. Delete the
-     mill and the rows describing what the mill consumed should go too.
+    mill and the rows describing what the mill consumed should go too.
     */
     process_id INT NOT NULL REFERENCES processes(id) ON DELETE CASCADE,
 
@@ -152,19 +152,18 @@ CREATE TABLE exchanges (
 
     /*
     NUMERIC(60, 50) because LCA inventories contain extremely small 
-    values. ELCD has amount below 1e-28. The loader preserves this by carrying amounts as texts through the pipeline and convert to instance of Decimal never through float.
+    values. ELCD has amount below 1e-28. The loader preserves this by carrying amounts as texts through the pipeline and convert to instance of Decimal, never through float.
     */
     amount NUMERIC(60, 50) NOT NULL,
 
    /*
    Unit for this specific amount. Usually the flow's default, but source
-   datasets sometimes express the same flow in a different compatible unit so it is recorded per exchange rathr than inherited.
+   datasets sometimes express the same flow in a different compatible unit so it is recorded per exchange rather than inherited.
    */
     unit_id INT REFERENCES units(id) ON DELETE SET NULL,
 
     -- 02_constraints.sql: at most one per process, and it must be an output.
     is_reference_flow BOOLEAN NOT NULL DEFAULT FALSE,
-
 
     comment TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -172,11 +171,10 @@ CREATE TABLE exchanges (
 
 
 /*
-Impact categories: the environmental questiosn the inventory can be 
+Impact categories: the environmental question the inventory can be 
 scored against (climate change, acidiciation, eutrophication).
 
-Note on method: the same emission scored under method CML 2 and under method Accumulated Exceedance gives different numbers in different units,
-so a category is only meaningful together with the method it belongs to.
+Note on method: the same emission scored under method CML 2 and under method Accumulated Exceedance gives different numbers in different units, so a category is only meaningful together with the method it belongs to.
 */
 CREATE TABLE impact_categories (
     id SERIAL PRIMARY KEY,
@@ -192,13 +190,13 @@ CREATE TABLE impact_categories (
 Impact results: what a process scores in a given category.
 Derived, not source data. Each value is the sum over the process's
 elementary flows of (exchange amount * characterization factor).
-so 2 kg of methane at a GWP100 factor of 28 contibues 56 kg of CO2-eq.
+2 kg of methane at a GWP100 factor of 28 contibues 56 kg of CO2-eq.
 
-Stored rather than computed on every query, which is also how msot LCA
+Stored rather than computed on every query, which is also how most LCA
 databases distribute their results. Populated upsert_direct_impacts_for_all_processes().
 
 Precision is lower than exchanges.amount because individual emissions
-can be near 1e-17, gut an aggregated score is in the order of kilograms.
+can be near 1e-17, but an aggregated score is in the order of kilograms.
 The trade-off is that a score below 1e-10 rounds to zero here.
 
 */
