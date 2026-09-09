@@ -63,3 +63,6 @@ A calculation engine that derives impacts from exchanges rather than hand-typed 
 Unit conversion that returns `NULL` rather than a wrong number when two units are not compatible.
 
 Analysis queries in `queries/`, and an independent Python reimplemntation of the seed arithmetic (`make validate-lcia-seed`) as secound source of truth.
+
+## ER Diagram
+<img width="910" height="744" alt="LCA ER" src="https://github.com/user-attachments/assets/f672ddf8-cd1b-4cd3-b9e3-ff31e715c41c" />
