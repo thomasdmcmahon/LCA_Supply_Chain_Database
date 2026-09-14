@@ -1,18 +1,15 @@
 /*
-- LCA Supply Chain Database
-- File: 02_exchanges_by_process.sql
-- Description: Human-readable bill of materials for each process.
-    Joins exchanges to processes, flows, and units.
-    This is the core join pattern that most outer queries build on.
+Exchanges joined to their process, flow and unit. The bill of material for each process, and the join pattern most other queries build on.
+
+Scoped to the seed data. Against the full ELCD load these return 212k rows; add a process filter before running them there.
 
 Run with:
-    docker compose exec -T postgres psql -U lca_user -d lca_supply_chain < queries/02_exchanges_by_process.sql
+    docker compoze exec -T postgres psql -U lca_user -d lca_supply_chain < queries/02_exchanges_by_process.sql
 */
 
-/* ALL EXHCANGES WITH CONTEXT
-Shows every exchange across all processes, with flow name, direction, 
-amount, unit, and whether it is the reference flow.
--- Expected: 17 rows
+
+/*
+Everything in context. direction DESC puts outputs first so each process reads product-out then inputs. 17 rows on seed data.
 */
 SELECT
     p.name AS process,
@@ -24,14 +21,11 @@ SELECT
 FROM exchanges e
     JOIN processes p ON p.id = e.process_id
     JOIN flows f ON f.id = e.flow_id
-    JOIN units u ON u.id = e.unit_id
+    LEFT JOIN units u ON u.id = e.unit_id
 ORDER BY p.id, e.direction DESC, e.is_reference_flow DESC;
 
 /*
-INPUTS PER PROCESS
-What each process consumes, excluding the reference flow.
-Useful for reading the supply chain left ro right.
--- Expected: 3 rows for wheat farming, 1 for transport, 3 for flour milling
+Inputs only (what each process consumes). Reading these bottom-up is how the supply chain traversal work: each product input resolves to the process that produces it.
 */
 SELECT
     p.name AS process,
@@ -47,9 +41,7 @@ WHERE e.direction = 'input'
 ORDER BY p.id, f.flow_type;
 
 /*
-OUTPUTS PER PROCESS
-What each process produces or emits.
--- Expected: 5 rows for wheat farming, 3 for transport, 2 for flour milling
+Outputs. The product the process exists to make, plus everything it emits. Reference flow first.
 */
 SELECT
     p.name AS process,

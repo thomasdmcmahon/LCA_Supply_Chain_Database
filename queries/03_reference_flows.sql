@@ -1,16 +1,12 @@
 /*
-- LCA Supply Chain Database
-- File: 03_reference_flows.sql
-- Description: Identifies the reference flow for each process and verifies the one-per-process constrant holds. The reference flow defines the functional unit of a process -- all other exchange amounts are relative to it.
+The reference flow is the output that defines what a process makes (1kg of flour, 1000m2 of carton board, ...). Every other amount on that process is per one unit of it, so without it the numbers have no denominator.
 
 Run with:
-      docker compose exec -T postgres psql -U lca_user -d lca_supply_chain < queries/03_reference_flows.sql
+    docker compose exec -T postgres psql -U lca_user -d lca_supply_chain < queries/03_reference_flows.sql
 */
 
 /*
-REFERENCE FLOW PER PROCESS
-Shows the functional unit for each process: what it produces and in what quantity. This is the denominator for every other exchange amount.
--- Expected: 3 rows, one per process.
+The functional unit of each process. 3 rows on seed data.
 */
 SELECT
     p.name AS process,
@@ -27,9 +23,7 @@ WHERE e.is_reference_flow = TRUE
 ORDER BY p.id;
 
 /*
-REFERENCE FLOW COUNT PER PROCESS
-Verifies the constraint: every process must have exactly one reference flow. Any row showing a count other than 1 indicates a data integrity problem.
--- Expected: 3 rows, all with reference_flow_count = 1
+Counts per process. This cannot return anything but 1 (the partial unique index in 02_constraints.sql makes two reference flows unstorable), so it demonstrates the constraint rather than testing it. Kept becuase seeing the count is the quickest way to confirm which rule is in force.
 */
 SELECT
     p.id AS process_id,
@@ -42,13 +36,14 @@ GROUP BY p.id, p.name
 ORDER BY p.id;
 
 /*
-PROCESSES WITH NO REFERENCE FLOW
-The unique index in 02_constraints.sql enforces at most one reference flow per process, but not at least one. This query surfaces any process that slipped through without.
--- Expcted: 0 (should return 0 rows on clean data)
+The real check. The database enforces at most one reference flow per process, but nothing enforces at least one (that is the loaders job). Any row here is a process where exchange amounts have no denominator, and which the supply chain traversal will return zero rows for.
+
+0 rows expected on seed data. Run this after every ELCD load.
 */
 SELECT
     p.id,
-    p.name AS process
+    p.name AS process,
+    p.source_dataset
 FROM processes p
 WHERE NOT EXISTS
 (
