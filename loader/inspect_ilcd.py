@@ -243,7 +243,6 @@ def render_text(summary: dict) -> str:
 
     return "\n".join(lines)
 
-
 def main() -> int:
     args = parse_args()
     export_dir = Path(args.export_dir).expanduser().resolve()
@@ -261,7 +260,6 @@ def main() -> int:
     else:
         print(render_text(summary))
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -46,3 +46,6 @@ load.log
 # docs
 docs/future_docs.DS_Store
 .DS_Store
+
+# ER drawio file
+schema/LCA ER.drawio.vscode/

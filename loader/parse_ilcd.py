@@ -82,14 +82,7 @@ def first_descendant_text(element: ET.Element, names: list[str]) -> str | None:
 def parse_decimal_str(text: str | None) -> str | None:
     """Validate a numeric string and return it unchanged, as a string.
 
-    ELCD amounts include LCA-scale tiny values (e.g. "5.38063410297918E-17")
-    that the database stores in a NUMERIC(60, 50) column. Routing them through
-    Python `float` rounds to the nearest float64 and permanently destroys that
-    precision before the data ever reaches the DB. This function never
-    constructs a `float`: it uses `Decimal` only to validate that the text is
-    a well-formed number, then returns the original stripped string so
-    parse/transform/load can carry it byte-for-byte into `decimal.Decimal` at
-    the point of insertion (see `to_decimal` in load_to_postgres.py).
+    ELCD amounts go down to values like "5.38063410297918E-17". Python's float can't hold that many digits, so calling float() here would round teh value before it ever reached the database. Decimal is used only to check the text is a valid number; the original string is what we return. The whole pipeline carries amounts as text until load_to_postgres.py converts to Decimal at insertion.
     """
     if text is None:
         return None
@@ -101,7 +94,6 @@ def parse_decimal_str(text: str | None) -> str | None:
     except InvalidOperation:
         return None
     return stripped
-
 
 def parse_process(path: Path) -> dict[str, Any]:
     root = ET.parse(path).getroot()

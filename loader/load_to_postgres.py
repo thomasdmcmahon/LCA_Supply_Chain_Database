@@ -33,7 +33,6 @@ DEFAULT_INPUT_DIR = Path("data/processed/elcd_3_2/transformed")
 DEFAULT_BATCH_SIZE = 1000
 SOURCE_DATASET = "ELCD 3.2 via openLCA ILCD export"
 
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Load transformed ELCD JSON records into PostgreSQL."
@@ -57,10 +56,8 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
-
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
-
 
 def load_input(input_dir: Path) -> dict[str, Any]:
     required = {
@@ -79,7 +76,6 @@ def load_input(input_dir: Path) -> dict[str, Any]:
             raise FileNotFoundError(f"Required input file not found: {path}")
         payload[key] = read_json(path)
     return payload
-
 
 def connect():
     load_dotenv()
@@ -103,32 +99,22 @@ def connect():
         port=os.environ["POSTGRES_PORT"],
     )
 
-
 def fetch_map(cursor, query: str, key_index: int = 0, value_index: int = 1) -> dict[Any, Any]:
     cursor.execute(query)
     return {row[key_index]: row[value_index] for row in cursor.fetchall()}
 
-
 def chunked(items: list[Any], size: int) -> list[list[Any]]:
     return [items[index:index + size] for index in range(0, len(items), size)]
 
-
 def to_decimal(value: Any) -> Decimal | None:
-    """Convert a parsed exchange amount to Decimal, never via float.
-
-    Amounts reach this point as the validated strings produced by
-    parse_ilcd.py's `parse_decimal_str` and passed through unchanged by
-    transform.py. If a `float` shows up here, it means a precision-losing
-    conversion was reintroduced upstream, so fail loudly instead of silently
-    rounding an LCA-scale value (see NUMERIC(60, 50) in schema/01_create_tables.sql).
-    """
+    # Converts a parsed exchange amount to instance of class Decimal,
+    # should never ble float (which causes innacuracies in recursive calculations).
     if value is None:
         return None
     if isinstance(value, float):
         raise TypeError(
-            "Exchange amount arrived as float, not str/Decimal. A precision-losing "
-            "float conversion was reintroduced upstream of load_to_postgres.py "
-            "(see loader/parse_ilcd.py:parse_decimal_str)."
+            # Exchange amount arrived as float, not str/Decimal
+            # a precision-losing float conversion was reintroduced upstream of load_to_postgres.py
         )
     if isinstance(value, Decimal):
         return value
