@@ -1,22 +1,19 @@
 /*
-- LCA Supply Chain Database
-- File: 10_supply_chain_rollup_examples.sql
-- Description: Exercises the generic recursive rollup (schema/07_supply_chain_rollup.sql) against the seed wheat-flour chain, cross-checked against the manual example in queries/06_supply_chain_graph.sql.
+Excercises the generic rollup (schema/07_supply_chain_rollup.sql) against the seed wheat-flour chain, cross-checked against the hand-written version in queries/06_supply_chain_graph.sql. The point is that the two agree: the generic functions derive from the schema what the manual query typed in.
 
 Run with:
     docker compose exec -T postgres psql -U lca_user -d lca_supply_chain < queries/10_supply_chain_rollup_examples.sql
+    make validate-lcia
 */
 
 /*
-SCALED PROCESS TRAVERSAL
-Same traversal as queries/06_supply_chain_graph.sql's first query, but
-generic and with automatically computed scaling factors instead of a
-manually written VALUES list.
+The traversal, with scaling factors computed rather than typed.
 Expected: 3 rows.
-    depth 0: Flour milling, wheat, RER      cumulative_scale = 1.00
-    depth 1: Wheat farming, conventional, RER cumulative_scale = 1.35
-    depth 1: Transport, lorry >32t, RER     cumulative_scale = 0.27
-(matches queries/06_supply_chain_graph.sql's hand-written scale VALUES list exactly)
+    depth 0  Flour milling              1.00
+    depth 1  Wheat farming              1.35   (1.35 kg grain per kg flour)
+    depth 1  Lorry transport            0.27   (0.27 tkm per kg flour)
+Matching queries/06's hand-written VALUES list exactly — that agreement is
+the actual test here.
 */
 SELECT
     depth,
@@ -26,22 +23,21 @@ SELECT
 FROM supply_chain_scaled_processes(
     3,      -- Flour milling, wheat, RER
     1.0,    -- target: 1 kg flour
-    50      -- max_depth (default shown explicitly)
+    50      -- max_depth (default, shown for clarity)
 )
 ORDER BY depth, process_name;
 
 /*
-CRADLE-TO-GATE INVENTORY
-The automatic equivalent of queries/06_supply_chain_graph.sql's second query
-(the manual VALUES-based rollup). Expected (hand-computed, exact):
-    Carbon dioxide, fossil : 0.00021065  kg
-    Ammonia                : 0.003780   kg
-    Nitrate, to water       : 0.002565   kg
-    Phosphate, to water     : 0.0001890  kg
-    Water, river            : 0.5670     m3
-    Nitrogen oxides          : 0.0000001674 kg
-skipped_unconvertible_count should be 0 for every row (seed units already
-consistent).
+Cradle-to-gate inventory: every upstream emission scaled and summer per susbtance. Each figure is the process amount times its scale, so they can be checked by hand against 03_seed_data.sql:
+
+    CO2                0.00021065   = 0.0000095 + 0.00013x1.35 + 0.000095x0.27
+    Ammonia            0.003780     = 0.0028 x 1.35
+    Nitrate, to water  0.002565     = 0.0019 x 1.35
+    Phosphate          0.0001890    = 0.00014 x 1.35
+    Water, river       0.5670       = 0.42 x 1.35
+    Nitrogen oxides    0.0000001674 = 0.00000062 x 0.27
+
+skipped_unconvertible_count should be 0 throughout, seed units are already consistent, so no conversion is attempted.
 */
 SELECT
     flow_name,
@@ -52,16 +48,12 @@ FROM supply_chain_inventory(3, 1.0)
 ORDER BY total_amount DESC;
 
 /*
-CRADLE-TO-GATE IMPACTS
-Feeds the inventory above through the same characterization logic as
-calculate_direct_impacts() (queries/09_lcia_calculation_validation.sql).
-Expected (hand-computed, exact):
-    GWP100 (CML 2002) = 0.00021065
-    AE (ILCD 2011)    = 0.011415723876
-    EP (CML 2002)     = 0.0001890
-Compare GWP100 against summing the three per-process direct results from
-queries/09 scaled by cumulative_scale by hand:
-    (0.0000095 * 1) + (0.00013 * 1.35) + (0.000095 * 0.27) = 0.00021065  -- matches.
+The inventory above characterized, using the same logic as calculate_direct_impacts(). Expected:
+    GWP100 (CML 2002)  0.00021065
+    AE (ILCD 2011)     0.0114157239
+    EP (CML 2002)      0.0001890
+
+Note what is missing and why: nitrate and water have no factor, so eutrophication here covers only phosphate, and the water flow contributes nothing at all. The numbers are correct for what is characterized, not complete for the product.
 */
 SELECT
     ic.code AS impact_category,
@@ -74,11 +66,11 @@ JOIN impact_categories ic ON ic.id = calc.impact_category_id
 ORDER BY ic.code;
 
 /*
-DEPTH CAP / CYCLE SAFETY SMOKE TEST
-The seed data has no cycles, so this just confirms a very low max_depth
-truncates the traversal rather than erroring -- with max_depth = 0 only the
-anchor (Flour milling itself) should come back.
-Expected: 1 row (Flour milling, wheat, RER, depth 0).
+Depth cap. With max_depth = 0 only the anchor comes back, and the traversal truncates rather than erroring.
+
+This does not test the cycle guard. The seed data is a tree, so NOT (upstream.id = ANY(path)) never fires here (testing it would need a constructed cycle, which is on the list rather than done).
+
+Expected: 1 row, Flour milling at depth 0
 */
 SELECT depth, process_name
 FROM supply_chain_scaled_processes(3, 1.0, 0)

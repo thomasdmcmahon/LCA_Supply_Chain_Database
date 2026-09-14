@@ -1,39 +1,29 @@
 /*
-- LCA Supply Chain Database
-- File: 09_lcia_calculation_validation.sql
-- Description: Validates the LCIA calculation engine (schema/06_lcia_calculation.sql) against the seed wheat-flour data, whose small size makes it hand-checkable.
+Validates the LCIA calculation engine (schema/06_lcia_calculation.sql) against the seed wheat-flour data, which is small enough to check by hand.
+
+!Warning: this file is not read-only. It calls upsert_direct_imapcts_for_all_procesess(), which rewrites impact_results for every process in the database, not just the seed ones.
+
+What it does NOT do is reproduce the hand-typed illustrative values in 03_seed_data.sql (wheat farming GWP=100 = 0.350 and so on). Those were placeholders, never dervived from the seed exchanges (they implicitly assume background emissions like N20 from fertilizer breakdown that are not modeled as exchanges anywhere). No correct engine could arrive at them from the visible data. What is validated here is that the engine implements "sum of characterized elementary exchanges" correctly, against expectations computed independently in Python (loader/validate_lcia_seed.py).
+
+Only four factors are seeded (04_characterization_factors.sql):
+CO2 -> GWP100, Phosphate -> EP, Ammonia and Nitrogen oxides -> AE. Nitrate, Water river and all of CED are delibaretly uncharacterized.
 
 Run with:
     docker compose exec -T postgres psql -U lca_user -d lca_supply_chain < queries/09_lcia_calculation_validation.sql
-
-IMPORTANT: this does NOT reproduce the pre-existing hand-typed illustrative
-impact_results values in 03_seed_data.sql (e.g. wheat farming GWP100 =
-0.350). Those numbers were typed by hand as placeholders and were never
-derived from the seed exchanges -- among other things they implicitly assume
-upstream/background emissions (e.g. N2O from fertilizer breakdown) that
-aren't modeled as explicit exchanges anywhere in the seed data, so no
-correct engine could reproduce them from the visible exchange list. What
-this file validates instead is that the engine correctly implements "sum of
-characterized elementary exchanges" against a hand-computed expectation --
-see the comments above each query for the exact expected numbers, computed
-independently in Python and reproduced in
-loader/validate_lcia_seed.py.
-
-Only 4 characterization_factors are seeded (04_characterization_factors.sql):
-CO2 -> GWP100, Phosphate -> EP, Ammonia -> Acidification (AE),
-Nitrogen oxides -> Acidification (AE). Everything else (Nitrate, Water
-river, and all of CED) is intentionally uncharacterized -- see that file's
-header for why.
+    make validate-lcia
 */
 
 /*
-DIRECT IMPACTS PER SEED PROCESS
-Expected (hand-computed, exact):
-    Wheat farming (process 1):   GWP100 = 0.00013         AE = 0.008456          EP = 0.00014
-    Lorry transport (process 2): GWP100 = 0.000095         AE = 0.0000004588      (no EP row -- no phosphate exchange on this process)
-    Flour milling (process 3):   GWP100 = 0.0000095         (no AE or EP row -- only CO2 is characterized on this process)
-characterized_exchange_count / skipped_exchange_count should show 0 skipped
-for all rows -- every seed exchange unit already matches its CF's unit.
+Direct impacts per seed process. Each number is amount x factor, so they can be checked against 03_seed_data.sql and 04_characterisation_factors.sql by hand:
+
+  Wheat farming    GWP100  0.00013      = 0.00013 CO2 x 1
+                   AE      0.008456     = 0.0028 ammonia x 3.02
+                   EP      0.00014      = 0.00014 phosphate x 1
+  Lorry transport  GWP100  0.000095     = 0.000095 CO2 x 1
+                   AE      0.0000004588 = 0.00000062 NOx x 0.74
+  Flour milling    GWP100  0.0000095    = 0.0000095 CO2 x 1
+
+Missing rows are correct: a process only appears for a category it has a characterized exchange in. skipped_exchange_count should be 0 throughout. Every seed exchange already uses its factor's unit, so no conversion is attempted.
 */
 SELECT
     p.name AS process,
@@ -48,13 +38,7 @@ WHERE p.source_dataset = 'Seed data (illustrative)'
 ORDER BY p.id, ic.code;
 
 /*
-PERSIST DIRECT IMPACTS
-Run the bulk upsert, then show what landed in impact_results for the seed
-processes. Note this OVERWRITES the pre-existing hand-typed GWP100/EP/AP
-values for processes/categories the engine actually computed (see header) --
-the AE category is new, so those rows are new inserts, not overwrites. CED
-and the untouched-by-CFs 'AP' rows keep their original hand-typed values
-since the engine has nothing to compute for them.
+Persist, then read back. This overwrites the hand-typed values for every (process, category) pair the engine computed. AE rows are new inserts, since that category did not exist in the seed data. CML's AP and CED keep their original hand-typed values (the engine has no factor for them, so it never writes those rows).
 */
 CALL upsert_direct_impacts_for_all_processes();
 
@@ -71,18 +55,14 @@ WHERE p.source_dataset = 'Seed data (illustrative)'
 ORDER BY p.id, ic.code;
 
 /*
-COVERAGE GAP
-Elementary flows used in the seed data with no characterization factor at
-all. Expected: Nitrate (to water) and Water, river -- exactly the two
-flows 04_characterization_factors.sql's header documents as deliberately
-unsourced.
+The coverage gap, scoped to seed data. Expected: Nitrate (to water) and Water, river (the two flows 04_characterization_factors.sql) documents as deliberately unsourced). Seeing exactly those two, and nothing else, confirms the documentation matches the data.
 */
 SELECT flow_name, unit_name
 FROM v_elementary_flows_without_cf
 WHERE flow_id IN (
     SELECT DISTINCT e.flow_id
-FROM exchanges e
+    FROM exchanges e
     JOIN processes p ON p.id = e.process_id
-WHERE p.source_dataset = 'Seed data (illustrative)'
+    WHERE p.source_dataset = 'Seed data (illustrative)'
 )
 ORDER BY flow_name;

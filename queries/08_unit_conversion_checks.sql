@@ -1,20 +1,17 @@
 /*
-- LCA Supply Chain Database
-- File: 08_unit_conversion_checks.sql
-- Description: Exercises v_exchange_unit_flags and convert_amount() (schema/05_unit_conversions.sql) against whatever data is currently loaded.
+Excercises v_exchange_unit_flags and convert_amount() (schema/05_unit_conversions.sql) against whatever is currently loaded.
+
+Worth knowing before reading the output: load_to_postgres.py does not yet populate units.unit_group_external_id for ELCD units, so convert_amount() returns NULL for any pair of them. That is the designed behaviour (no conversion groups, no guess), but it means the checks below mostly excercise the seed units until that loader work is done.
 
 Run with:
     docker compose exec -T postgres psql -U lca_user -d lca_supply_chain < queries/08_unit_conversion_checks.sql
+    make check-units
 */
 
 /*
-UNIT STATUS BREAKDOWN
-How many exchanges fall into each unit_status bucket. On the seed data alone,
-expect everything to be 'matches_flow_default' (the seed data was hand-typed
-consistently). After an ELCD load, expect some 'unit_missing' rows (exchanges
-whose olca:unitId didn't resolve during transform) and possibly
-'incompatible' rows once real cross-unit exchanges show up -- both are
-informational, not errors.
+How exchanges distrbute across the four unit_status buckets.
+
+Seed data alone: all 'matches_flow_default', sice it was typed consistently by hand. After an ELCD loda, expect 'unit_missing' rows where the transform could not resolve a unit, and 'incompatible' rows for cross-unit exchanges. Neither is an arror, both are the view doing its job.
 */
 SELECT
     unit_status,
@@ -24,15 +21,12 @@ GROUP BY unit_status
 ORDER BY exchange_count DESC;
 
 /*
-INCOMPATIBLE EXCHANGES
-The actual flag: exchanges whose unit cannot be reconciled with their flow's
-default unit at all (not just "different unit", but genuinely unconvertible
-given what's currently modeled in units.unit_group_external_id /
-to_base_unit_factor). Worth reviewing by hand -- could be a genuine
-dimensional mismatch in the source data, or simply a conversion group this
-project hasn't populated real factors for yet (see the follow-up note in
-schema/05_unit_conversions.sql for ELCD units specifically).
-Expected on seed data alone: 0 rows.
+The flag itself: exchanges whose unit cannot be reconciled with the flow's default at all. Two different causes sit in this bucket, and telling them apart needs a human:
+
+- a genuine dimensional mismatch in the source data, which is a real data quality problem
+- a conversion group this project has not populated factors for, which is just unfinished work
+
+Expected on seed data alone: 0 rows
 */
 SELECT
     process_name,
@@ -45,11 +39,9 @@ ORDER BY process_name, flow_name
 LIMIT 50;
 
 /*
-CONVERT_AMOUNT() SANITY CHECK
-Direct exercise of the conversion function against the seed units: 1000 kg
-should equal 1 t; kWh <-> MJ should round-trip; a mass unit converted to an
-energy unit should return NULL (not silently zero or wrong).
-Expected: 1000.00..., 1.00..., 3.6000..., NULL
+The function itself, against the seed units. The last one is the important case: a mass unit converted to an energy unit must return NULL rather than a plausible-looking number.
+
+Expected: 1, 1000, 3.6, NULL
 */
 SELECT
     convert_amount(1000, (SELECT id FROM units WHERE name = 'kg'), (SELECT id FROM units WHERE name = 't')) AS kg_1000_to_t,
