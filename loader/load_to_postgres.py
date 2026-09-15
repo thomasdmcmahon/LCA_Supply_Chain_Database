@@ -24,14 +24,14 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
 import psycopg2
+from dotenv import load_dotenv
 from psycopg2.extras import execute_values
-
 
 DEFAULT_INPUT_DIR = Path("data/processed/elcd_3_2/transformed")
 DEFAULT_BATCH_SIZE = 1000
 SOURCE_DATASET = "ELCD 3.2 via openLCA ILCD export"
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -56,8 +56,10 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
+
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
 
 def load_input(input_dir: Path) -> dict[str, Any]:
     required = {
@@ -76,6 +78,7 @@ def load_input(input_dir: Path) -> dict[str, Any]:
             raise FileNotFoundError(f"Required input file not found: {path}")
         payload[key] = read_json(path)
     return payload
+
 
 def connect():
     load_dotenv()
@@ -99,22 +102,32 @@ def connect():
         port=os.environ["POSTGRES_PORT"],
     )
 
-def fetch_map(cursor, query: str, key_index: int = 0, value_index: int = 1) -> dict[Any, Any]:
+
+def fetch_map(
+    cursor, query: str, key_index: int = 0, value_index: int = 1
+) -> dict[Any, Any]:
     cursor.execute(query)
     return {row[key_index]: row[value_index] for row in cursor.fetchall()}
 
+
 def chunked(items: list[Any], size: int) -> list[list[Any]]:
-    return [items[index:index + size] for index in range(0, len(items), size)]
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
 
 def to_decimal(value: Any) -> Decimal | None:
-    # Converts a parsed exchange amount to instance of class Decimal,
-    # should never ble float (which causes innacuracies in recursive calculations).
+    """Convert a parsed exchange amount to Decimal. Never via float.
+
+    A float arriving here means precision was already lost upstream.
+    Decimal(float) would produce a number that looks right and isn't, so this
+    raises instead. See loader/check_precision.py.
+    """
     if value is None:
         return None
     if isinstance(value, float):
         raise TypeError(
-            # Exchange amount arrived as float, not str/Decimal
-            # a precision-losing float conversion was reintroduced upstream of load_to_postgres.py
+            f"Exchange amount arrived as float ({value!r}), not str or Decimal. "
+            "A precision-losing float conversion was reintroduced upstream of "
+            "load_to_postgres.py (see parse_ilcd.parse_decimal_str)."
         )
     if isinstance(value, Decimal):
         return value
@@ -125,6 +138,10 @@ def to_decimal(value: Any) -> Decimal | None:
 
 
 def assert_exchange_amount_precision(cursor) -> None:
+    """Fail before loading if the schema cannot hold ELCD-scale values.
+
+    Carrying amounts as Decimal through the pipeline is pointless if the
+    column truncates them on arrival, so this runs first."""
     cursor.execute(
         """
         SELECT numeric_precision, numeric_scale
@@ -172,7 +189,9 @@ def upsert_categories(cursor, categories: list[dict[str, Any]]) -> dict[str, int
     # Categories depend on parent categories, so we load them level by level.
     for category in sorted(categories, key=lambda item: item["level"]):
         parent_external_id = category.get("parent_external_id")
-        parent_id = id_by_external.get(parent_external_id) if parent_external_id else None
+        parent_id = (
+            id_by_external.get(parent_external_id) if parent_external_id else None
+        )
         cursor.execute(
             """
             INSERT INTO categories (name, parent_id, full_path)
@@ -198,7 +217,9 @@ def upsert_categories(cursor, categories: list[dict[str, Any]]) -> dict[str, int
                 )
             existing = cursor.fetchone()
             if existing is None:
-                raise RuntimeError(f"Could not resolve category after upsert: {category}")
+                raise RuntimeError(
+                    f"Could not resolve category after upsert: {category}"
+                )
             category_id = existing[0]
             cursor.execute(
                 "UPDATE categories SET full_path = %s WHERE id = %s",
@@ -223,10 +244,19 @@ def upsert_units(cursor, units: list[dict[str, Any]]) -> dict[str, int]:
         )
     cursor.execute("SELECT id, name FROM units")
     id_by_name = {name: unit_id for unit_id, name in cursor.fetchall()}
-    return {item["external_id"]: id_by_name[item["name"]] for item in units if item["name"] in id_by_name}
+    return {
+        item["external_id"]: id_by_name[item["name"]]
+        for item in units
+        if item["name"] in id_by_name
+    }
 
 
-def upsert_flows(cursor, flows: list[dict[str, Any]], unit_id_by_external: dict[str, int], batch_size: int) -> dict[str, int]:
+def upsert_flows(
+    cursor,
+    flows: list[dict[str, Any]],
+    unit_id_by_external: dict[str, int],
+    batch_size: int,
+) -> dict[str, int]:
     rows = [
         (
             item["name"],
@@ -253,7 +283,9 @@ def upsert_flows(cursor, flows: list[dict[str, Any]], unit_id_by_external: dict[
             """,
             batch,
         )
-    return fetch_map(cursor, "SELECT external_id, id FROM flows WHERE external_id IS NOT NULL")
+    return fetch_map(
+        cursor, "SELECT external_id, id FROM flows WHERE external_id IS NOT NULL"
+    )
 
 
 def upsert_processes(
@@ -293,7 +325,9 @@ def upsert_processes(
             """,
             batch,
         )
-    return fetch_map(cursor, "SELECT external_id, id FROM processes WHERE external_id IS NOT NULL")
+    return fetch_map(
+        cursor, "SELECT external_id, id FROM processes WHERE external_id IS NOT NULL"
+    )
 
 
 def replace_exchanges(
@@ -314,7 +348,9 @@ def replace_exchanges(
         }
     )
     if process_ids:
-        cursor.execute("DELETE FROM exchanges WHERE process_id = ANY(%s)", (process_ids,))
+        cursor.execute(
+            "DELETE FROM exchanges WHERE process_id = ANY(%s)", (process_ids,)
+        )
 
     # Amounts arrive as decimal-safe strings all the way from parse_ilcd.py;
     # to_decimal() converts them to Decimal right here, immediately before
@@ -430,8 +466,12 @@ def main() -> int:
                 "loaded": True,
                 **summary,
                 "exchange_rows_inserted": exchange_load_stats["inserted"],
-                "exchange_rows_skipped_zero_amount": exchange_load_stats["skipped_zero_amount"],
-                "exchange_rows_skipped_unparsable_amount": exchange_load_stats["skipped_unparsable_amount"],
+                "exchange_rows_skipped_zero_amount": exchange_load_stats[
+                    "skipped_zero_amount"
+                ],
+                "exchange_rows_skipped_unparsable_amount": exchange_load_stats[
+                    "skipped_unparsable_amount"
+                ],
             },
             indent=2,
         )
