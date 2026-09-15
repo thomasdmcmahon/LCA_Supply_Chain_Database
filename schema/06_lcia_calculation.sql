@@ -1,26 +1,18 @@
 /*
-- LCA Supply Chain Database
-- File: 06_lcia_calculation.sql
-- Description: LCIA calculation engine. Derives impact_results from
-  exchanges x characterization_factors instead of the hand-entered seed
-  values, using convert_amount() (05_unit_conversions.sql) wherever an
-  exchange's unit differs from its characterization factor's unit.
+The LCIA calculation engine: turns exchanges into impact scores by multiplying
+each elementary amount by its characterization factor.
 
-Run after 01_create_tables.sql, 02_constraints.sql, 03_seed_data.sql,
-04_characterization_factors.sql, and 05_unit_conversions.sql.
+This file handles direct impacts (only the exchanges recorded on the process itself).
+For a whole upstream chain, see caclulcate_cradle_to_gate_impacts() in 07_supply_chain_rollup.sql,
+which runs a scaled inventory through the same logic.
 
-This covers *direct* (single-process, gate-to-gate) impacts: only the
-exchanges recorded directly on a process. For cradle-to-gate impacts across
-an upstream supply chain, see calculate_cradle_to_gate_impacts() in
-07_supply_chain_rollup.sql, which feeds a scaled upstream inventory through
-the same characterization logic as this file.
+Run after 01 through 05.
 
-Nothing here is destructive: upsert_direct_impacts_for_all_processes() only
-writes rows for (process, impact_category) pairs it actually computed a
-value for. impact_results rows for categories with no characterization_factors
-coverage at all (e.g. the seed data's original CML 'AP'/'CED' rows -- see
-04_characterization_factors.sql) are never touched by this engine and keep
-whatever value they already had.
+On overwriting: upsert_direct_impacts_for_all_processes() replaces existing
+impact_results values for every (process, category) pair it computes. The seed
+data's hand-typed numbers for GWP100 and EP are overwritten. What survives is
+categories with no factors at all (CML's 'AP' and 'CED) because the engine never
+produces a row for them.
 
 Run with:
     docker compose exec -T postgres psql -U lca_user -d lca_supply_chain \
@@ -29,20 +21,14 @@ Run with:
 */
 
 /*
---- calculate_direct_impacts(process_id) ---
-Read-only. Returns one row per impact category the process has at least one
-characterized elementary exchange for.
+One row per impact category the process has at least one characterized exchange for.
+Read-only.
 
-  characterized_exchange_count -- exchanges with a matching CF whose units
-                                   converted successfully and contributed to
-                                   `value`.
-  skipped_exchange_count       -- exchanges with a matching CF whose units
-                                   could NOT be converted (convert_amount()
-                                   returned NULL); excluded from `value`.
+    characterized_exchange_count  contributed to value
+    skipped_exchange_count        had a factor, but the units would not convert
 
-Note this does NOT count elementary exchanges with no CF row at all -- those
-never enter this function's join to begin with. See
-v_elementary_flows_without_cf below for that coverage gap.
+Neither counts exchanges with no factor at all — those never enter the join.
+See v_elementary_flows_without_cf at the bottom for that gap.
 */
 CREATE OR REPLACE FUNCTION calculate_direct_impacts(p_process_id INT)
 RETURNS TABLE (
@@ -82,10 +68,9 @@ COMMENT ON FUNCTION calculate_direct_impacts(INT) IS
 
 
 /*
---- upsert_direct_impacts(process_id) ---
-Persists calculate_direct_impacts() for one process into impact_results.
-Only writes categories with a non-NULL computed value; existing rows for
-categories this process has no CF coverage for are left untouched.
+Persists the above for one process. Skips categories where the value came out
+NULL, so a failed conversion leaves the existing row alone rather than replacing
+it with nothing.
 */
 CREATE OR REPLACE PROCEDURE upsert_direct_impacts(p_process_id INT)
 LANGUAGE sql
@@ -103,12 +88,15 @@ COMMENT ON PROCEDURE upsert_direct_impacts(INT) IS
 
 
 /*
---- upsert_direct_impacts_for_all_processes() ---
-Set-based equivalent of calling upsert_direct_impacts() for every process --
-built as one query rather than a per-process loop so it stays fast at ELCD
-scale (608 processes, 212k exchanges). This is the "rerunnable like the
-loader" entry point: safe to call repeatedly, matches the loader's own
-upsert-don't-duplicate pattern.
+The same thing for every process, as one statement rather than a loop (at 611 processes
+and 212k exhanges, a per-process loop would mean 611 separate queries).
+
+Safe to rerun: it uperts on (process_id, impact_category_id), the same don't duplicate
+pattern the loader uses.
+
+Note convert_amount() appears twice, in the SUM and in the WHERE. Postgres evaluates
+both, so each qualifying row converts twice. Correct but wasteful (a lateral or a CTE could
+do it once).
 */
 CREATE OR REPLACE PROCEDURE upsert_direct_impacts_for_all_processes()
 LANGUAGE sql
@@ -135,15 +123,12 @@ COMMENT ON PROCEDURE upsert_direct_impacts_for_all_processes() IS
 
 
 /*
---- COVERAGE DIAGNOSTICS ---
-*/
+What the engine cannot score: elementary flows used in at least one exchange with
+no characterization factor in any category.
 
--- Elementary flows that are actually used in at least one exchange but have
--- no characterization_factors row at all, for ANY impact category. Expect
--- this to be large for the full ELCD load (04_characterization_factors.sql
--- seeds only 4 flows total) -- that's the expected, documented state, not a
--- bug. Use this view to see exactly what's missing before sourcing more
--- factors.
+Expect this to be long after an ELCD load (only four flows are seeded). That is the
+documented state, not a bug, and this view is how to see exactly what sourcing work remains.
+*/
 CREATE OR REPLACE VIEW v_elementary_flows_without_cf AS
 SELECT DISTINCT
     f.id AS flow_id,
