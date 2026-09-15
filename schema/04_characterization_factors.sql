@@ -1,108 +1,97 @@
 /*
-- LCA Supply Chain Database
-- File: 04_characterization_factors.sql
-- Description: Characterization factors linking elementary flows to impact
-  categories, plus a small, real, cited set of factors for the seed
-  wheat-flour dataset.
+Characterization factors: the multipliers that turn an emission amount into a
+contribution to an impact category. 2 kg of methane at a GWP100 factor of 28
+contributes 56 kg CO2-eq.
 
-Run after 01_create_tables.sql, 02_constraints.sql, and 03_seed_data.sql.
+This file defines the table and seeds a handful of real, cited factors. Enough
+to prove the calculation engine works end to end on the small wheat-flour example,
+and no further.
 
-WHAT THIS FILE DOES NOT DO
-Characterization factors are sourced numbers, not invented ones. This file
-seeds only the handful this project could verify against a primary source
-during development -- it is nowhere near a full CF database. Specifically:
+Run after 01_create_tables.sql, 02_constraints.sql and 03_seed_data.sql.
 
-  - Coverage is limited to the elementary flows present in the illustrative
-    wheat-flour seed data (03_seed_data.sql): CO2, ammonia, nitrogen oxides,
-    and phosphate. Nitrate (eutrophication) and "Water, river" (a resource
-    flow with no matching impact category in this project) are deliberately
-    left uncharacterized -- no verified primary-source factor was located for
-    nitrate during this session, and it would be worse to guess than to leave
-    it visibly blank. See `v_elementary_flows_without_cf`
-    (06_lcia_calculation.sql) to see what's missing at query time.
-  - "Cumulative energy demand" (impact_categories.code = 'CED') gets no
-    factors here at all. CED is characterized on *resource extraction* flows
-    (e.g. "Crude oil, in ground", "Hard coal, in ground", each with a
-    calorific-value-based factor), not on the emissions/elementary flows this
-    seed dataset models. None of those resource flows exist in the seed data,
-    so there is nothing correct to characterize yet.
-  - None of this touches the real ELCD 3.2 load (65k flows, mostly with no
-    CF at all). Bulk-sourcing real factors for that dataset -- e.g. from the
-    ILCD 2011 Recommended LCIA methods CF database (JRC, see source below) or
-    a licensed method like ecoinvent's own LCIA implementation -- is future
-    work; this file only proves the calculation engine (06_lcia_calculation.sql)
-    is correct end-to-end on a small, checkable example.
+!!WHAT THIS FILE DOES NOT DO!!
 
-SOURCES USED (real, cited, not invented)
-  - GWP100, CO2 (fossil) = 1 kg CO2-eq/kg. Definitional: CO2 is the reference
-    substance for every GWP100 variant (IPCC, CML, ReCiPe alike), so this
-    value is not method-specific.
-  - Eutrophication, Phosphate = 1 kg PO4-eq/kg. Definitional: this project's
-    seed 'EP' category is expressed in kg PO4-equivalents and phosphate (PO4)
-    is that indicator's own reference substance, independent of which
-    eutrophication submodel (CML, ReCiPe rescaled to PO4-eq, etc.) is behind
-    it.
-  - Acidification, Ammonia = 3.02 molc H+-eq/kg; Nitrogen oxides = 0.74 molc
-    H+-eq/kg (mapped from the standard "NOx as NO2" LCA convention, the same
-    convention used for "sulphur oxides as SO2" in the same source).
-    These are NOT CML 2002 kg-SO2-eq factors (a search for verifiable CML
-    2002 acidification numbers during this session produced inconsistent
-    secondary-source values for ammonia -- 1.6 vs 1.88 kg SO2-eq/kg
-    depending on source -- so none of those were used here). Instead these
-    use the EU JRC's own recommended Accumulated Exceedance method, which
-    ships a fully derived, citable table:
-      European Commission, Joint Research Centre, Institute for Environment
-      and Sustainability (2012). "Characterisation factors of the ILCD
-      Recommended Life Cycle Impact Assessment methods -- Database and
-      Supporting Information," 1st edition, EUR 25167 EN, section 3.6,
-      Table 3 (derived from Posch et al., 2008), doi:10.2788/60825.
-      https://eplca.jrc.ec.europa.eu/uploads/LCIA-characterization-factors-of-the-ILCD.pdf
-    Because the unit (molc H+-eq) differs from the seed 'AP' category's
-    kg SO2-eq, these factors are attached to a new impact_categories row
-    ('AE' / ILCD 2011) rather than forced into the existing CML 'AP' row --
-    see below. The original seed 'AP' (CML 2002) category is left with no
-    factors rather than mixing methods under a label that wouldn't match.
+A factor with no traceable source invalidates everything computed from it,
+so only sources numbers go in. That leaves real gaps, on purpose:
+
+    - Coverage extends only to the elementary flows in the seed data: CO2,
+    ammonia, nitrogen oxides and phosphate. Nitrate (eutrophication) and
+    "Water, river" (a resource flow with no matching impact category here)
+    are left uncharacterized (no verified source was found for nitrate, and
+    guessing is worse than leaving it visibly blank). The view v_elementary_flows_withtout_cf,
+    defined in 06_lcia_calculation,sql, lists what is missing at query time.
+
+    - Cumulative energy demand (code 'CED') gets no factors at all. CED is characterized
+    on resource extraction flows (crude oil in ground, hard coal in ground, each with no
+    calorific-value factor) not on on the emissions the seed data models. None of those resoruce
+    flows exist here, so there is nothing correct to characterize.
+
+    - Nothing here covers the ELCD 3.2 load, whose flows are almost entirely uncharacterized.
+    Bulk-sourcing factors for it (from the ILCD 2011 Recmonneded LCIA methods database (JRC, cited below))
+    or a licensed method (is future work). Note that it is sourcing work, not coding: ELCD ships
+    several separate flow rows for the same substance, matched only by CAS numbers, so each ahs to be
+    mapped deliberately.
+
+SOURCES
+
+    - GWP100, fossil CO2 = 1 kg CO2-eq/kg. Definitional: CO2 is the reference substance for
+    every GWP100 variant (IPCC, CML, ReCiPe), so the value is not method-specific.
+
+    - Eutrophication, phosphate = 1 kg PO4-eq/kg. Definitional in the same way:
+    this porject's 'EP' category is expressed in kg PO4-equivalents and phosphate
+    is that indicator's own reference substance.
+
+    - Acidification, ammonia = 3.02 molc H+-eq/kg; nitrogen oxides = 0.74 molc H+-EQ/kg
+    (mapped fromn the standard "NOx as NO2" convention, the same one the source applies
+    to "sulphur oxides as SO2").
+
+    These are NOT CML 2002 kg-SO2-eq factors. Secondary sources for CML 2002 acification disagreed
+    on ammonia (1.6 vs 1.88 kg SO2-eq/kg depening on which source) with no way to adjudicate between
+    them, so none were used. These use the EU JRC's own recommended Accumulated Exceedeance method
+    instead, which ships a fully derived, citable table:
+
+        European Commission, Joint Research Centre, Institute for Environment
+          and Sustainability (2012). "Characterisation factors of the ILCD
+          Recommended Life Cycle Impact Assessment methods — Database and
+          Supporting Information", 1st edition, EUR 25167 EN, section 3.6,
+          Table 3 (derived from Posch et al., 2008), doi:10.2788/60825.
+          https://eplca.jrc.ec.europa.eu/uploads/LCIA-characterization-factors-of-the-ILCD.pdf
+
+    Becuae the unit differs from the seed 'AP' category's kg SO2-eq, these attach to a new
+    impact_categories_row ('AE' / ILCD 2001) rather than being forced into the CML row.
+    The method changed to match the source that could be verified, rather than the source being
+    picked to fit a method actually assumed. The original 'AP' row keeps no factors at all.
 */
 
 CREATE TABLE IF NOT EXISTS characterization_factors (
     id SERIAL PRIMARY KEY,
 
-    -- Impact category this factor contributes to. The characterization
-    -- *method* is implied by the category (impact_categories.method), so
-    -- there is one factor per (impact_category, flow) pair -- not per
-    -- method name -- matching the impact_categories table's own
-    -- (code, method) uniqueness.
+    -- The method is implied by the category (impact_categories.method), so
+    -- one factor per (category, flow) pair is enough. A different method
+    -- means a different category row, not a second factor here.
     impact_category_id INT NOT NULL REFERENCES impact_categories(id) ON DELETE CASCADE,
 
-    -- Elementary flow being characterized. In principle this should only
-    -- ever reference flows.flow_type = 'elementary'; enforced by a trigger
-    -- below rather than a CHECK, since CHECK constraints can't reference
-    -- other tables.
+    -- Must be an elementary flow. Enforced by the trigger below rather than
+    -- a CHECK, since CHECK cannot reference another table.
     flow_id INT NOT NULL REFERENCES flows(id) ON DELETE CASCADE,
 
-    -- Multiply one unit_id of this flow by this factor to get one unit of
-    -- the impact category's indicator (e.g. kg CO2-eq per kg CO2).
-    -- NUMERIC(60, 50) matches exchanges.amount so a factor sourced at
-    -- LCA-scale precision isn't truncated here either.
+    -- Multiply one unit_id of this flow by this to get one unit of the
+    -- category's indicatior. NUMERIC(60, 50) matches exchanges.amount so a
+    -- factor published at LCA-scale precision is not truncated here either.
     factor NUMERIC(60, 50) NOT NULL,
 
-    -- The unit this factor is expressed per. Usually the flow's own default
-    -- unit. Kept explicit (rather than assumed) because a factor sourced
-    -- from the literature may be published per a different unit than this
-    -- database's flow default -- the calculation engine converts between
-    -- them via convert_amount() (05_unit_conversions.sql).
+    -- The unit the factor is published per, which is not always the flow's default.
+    -- Keep explicit rather than assumed; the calculation engine reconciles the two
+    -- via convert_amount() (05_unit_conversion.sql).
     unit_id INT REFERENCES units(id) ON DELETE SET NULL,
 
-    -- Citation for where this number came from. Required in spirit, not
-    -- enforced by NOT NULL, so a row can never be mistaken for something
-    -- verified when it wasn't.
+    -- Citation. Deliberately not NOT NULL: a row without one should look unverified
+    -- rather than be impossible to insert.
     source TEXT,
 
-    -- TRUE marks a factor that is a stand-in (e.g. a rough order-of-magnitude
-    -- guess) rather than a verified published value. Every factor seeded by
-    -- this file is FALSE -- see header comment. Kept for future bulk-loading
-    -- work where placeholders may be unavoidable and must stay visibly
-    -- flagged rather than silently trusted.
+    -- TRUE for a stand-in rather than a published value. Every row this file
+    -- seeds is FALSE. Kept for future bulk loading, where placeholders may be
+    -- unavoidable and must stay visibly flagged.
     is_placeholder BOOLEAN NOT NULL DEFAULT FALSE,
 
     notes TEXT,
@@ -122,8 +111,9 @@ CREATE INDEX IF NOT EXISTS idx_characterization_factors_flow
 CREATE INDEX IF NOT EXISTS idx_characterization_factors_category
     ON characterization_factors(impact_category_id);
 
--- Enforce flow_id -> elementary at the database level. A CHECK constraint
--- can't reference another table, so this needs a trigger.
+-- Characterizing a product or waste flow is meaningless (impacts come from
+-- what cross into nature). A CHECK cannot look at flows.flow_type, so this
+-- is a trigger.
 CREATE OR REPLACE FUNCTION trg_characterization_factor_flow_is_elementary()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -156,12 +146,12 @@ COMMENT ON COLUMN characterization_factors.is_placeholder IS
 
 
 /*
---- NEW IMPACT CATEGORY: Acidification (Accumulated Exceedance, ILCD 2011) ---
-Added alongside the existing seed 'AP' (CML 2002, kg SO2-eq) category rather
-than reusing it, because the only acidification factors this project could
-verify (JRC 2012, Table 3) use a different method and a different unit
-(molc H+-eq, not kg SO2-eq). The original 'AP' row is untouched and still has
-no characterization_factors rows -- see file header.
+A fifth impact category, alongside the four in 03_seed_data.sql.
+
+Accumulated Exceedance is a different model from CML acidification, with a different
+indicator and a different unit (molc H+-eq, not kg SO2-eq). Storing
+it under the existing 'AP' row would produce numbers that look comparable to CML results
+and are not, so it gets its own row and the unit travels with the value.
 */
 INSERT INTO impact_categories (name, code, method, unit, description)
 VALUES (
@@ -178,15 +168,17 @@ SET name = EXCLUDED.name,
 
 
 /*
---- CHARACTERIZATION FACTORS ---
-Looked up by flow name / impact category code rather than hardcoded IDs, so
-this file doesn't depend on insertion order staying exactly as it is in
-03_seed_data.sql. Flow lookups also filter external_id IS NULL: seed flows
-never get an external_id (only ELCD-loaded flows do), and the real ELCD
-export can plausibly contain a same-named flow (e.g. another "Carbon
-dioxide, fossil"), which would otherwise make "WHERE name = ..." ambiguous
-if this file is ever (re)run against a database that already has both seed
-and ELCD data loaded.
+The factors themselves.
+
+Looked up by name rather than a hardcoded id, so this file does not depend on
+03_seed_data.sql's insertion order. Flow lookups filter on external_id IS NULL
+because that is what distinguishes a seed flow from an ELCD one. ELCD ships several
+rows named "Carbon dioxide, fossil" which would otherwise make the lookup amgiguous
+once both datasets are loaded.
+
+Note the fragility: the method string below is repeated in every lookup. A typo in
+one of them makes its WHERE EXISTS return nothing, and the INSERT then succeeds having
+written no row. A factor that quitely fails to appear is the faulure mode to watch for here.
 */
 INSERT INTO characterization_factors (impact_category_id, flow_id, factor, unit_id, source, is_placeholder, notes)
 SELECT
