@@ -1,31 +1,32 @@
 /*
-- LCA Supply Chain Database
-- File: 02_constraints.sql
-- Description: Indexes, constraints, and integrity rules
+Indexes, constraints and table comments. Run after 01_create_tables.sql.
 
--- Run after 01_create_tables.sql
+The constraints here are where the LCA rules live. Putting them in the
+database rather than in the loader means they hold no matter what writes
+to it, and it is the reason the traversal can assume a process has exactly
+one reference flow without checking.
+
+Note: the ALTER TABLE ... ADD CONSTRAINT statements are not idempotent and
+will error on a second run. That is fine as long as this file only runs against
+the empty volume (see make reset), which is how Docker executes it.
 */
 
 -- INDEXES
 
--- Processes
+-- Foreign keys are not indexed automatically in Postgres.
 CREATE INDEX IF NOT EXISTS idx_processes_geography
     ON processes(geography_id);
 
 CREATE INDEX IF NOT EXISTS idx_processes_category
     ON processes(category_id);
 
--- external_id already has a UNIQUE constraint in 01_create_tables.sql,
--- so PostgreSQL already creates an index for it.
 
--- Flows
+-- flow_type is the filter in almost every analysis query: product flows for
+-- traversal, elementary flows for impacts.
 CREATE INDEX IF NOT EXISTS idx_flows_flow_type
     ON flows(flow_type);
 
--- external_id already has a UNIQUE constraint in 01_create_tables.sql,
--- so PostgreSQL already creates an index for it.
-
--- Exchanges
+-- 212k rows, and the recursive traversal joins on process_id at every step.
 CREATE INDEX IF NOT EXISTS idx_exchanges_process
     ON exchanges(process_id);
 
@@ -35,25 +36,32 @@ CREATE INDEX IF NOT EXISTS idx_exchanges_flow
 CREATE INDEX IF NOT EXISTS idx_exchanges_direction
     ON exchanges(direction);
 
+-- The composite covers "product inputs of this process", which is the hot
+-- path in supply_chain_scaled_processes().
 CREATE INDEX IF NOT EXISTS idx_exchanges_process_dir
     ON exchanges(process_id, direction);
 
--- Impact results
 CREATE INDEX IF NOT EXISTS idx_impact_results_process
     ON impact_results(process_id);
 
 CREATE INDEX IF NOT EXISTS idx_impact_results_category
     ON impact_results(impact_category_id);
 
+-- Not indexed here: processes.external_id and flows.external_id already have
+-- UNIQUE constraints from 01_create_tables.sql, and Postgres backs those
+-- with an idex
 
-/*
--- BUSINESS LOGIC CONSTRAINTS
-*/
+-- CONSTRAINTS
+
+-- A zero-amount exchange is an edge that carries nothing. Negative amounts
+-- are allowed (ELCD uses them for waste leaving the system).
 
 ALTER TABLE exchanges
     ADD CONSTRAINT chk_exchange_amount_nonzero
     CHECK (amount != 0);
 
+-- A type catcher, not a data quality rule. The upper bound is deliberately
+-- loose: LCA datasets can describe projected scenarios.
 ALTER TABLE processes
     ADD CONSTRAINT chk_reference_year_range
     CHECK (
@@ -61,6 +69,7 @@ ALTER TABLE processes
         OR reference_year BETWEEN 1990 AND 2100
     );
 
+-- The reference flow is what the process produces, so it cannot be an input.
 ALTER TABLE exchanges
     ADD CONSTRAINT chk_reference_flow_is_output
     CHECK (
@@ -68,10 +77,32 @@ ALTER TABLE exchanges
         OR direction = 'output'
     );
 
+/*
+At most one reference flow per process. Two would make "per one unit of
+the reference flow" ambiguous and break every scaling calcualation downstream.
+
+A partial unique index rather than a UNIQUE constraint: the uniqueness only
+applies to rows where is_reference_flow is TRUE. A plain unique index on
+process_id would allow only one exchange per process entirely.
+
+Note this enforces at most one, not at least one. Nothing here can require a
+process to have a reference flow (that is checked after loading, in
+queries/03_reference_flows.sql and 07_elcd.validation.sql)
+*/
 CREATE UNIQUE INDEX IF NOT EXISTS idx_exchanges_one_reference_flow
     ON exchanges(process_id)
     WHERE is_reference_flow = TRUE;
 
+
+/*
+An impact category is identified by code plus method, not code alone:
+acidification under CML 2002 (kg S02-eq) under ILCD 2011 (molc H+-eq)
+are different indicators in different units, and must never be summer or
+compared.
+
+Wrapped in a DO block because ALTER TABLE ... ADD CONSTRAINT has no
+IF NOT EXISTS form.
+*/
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -85,6 +116,12 @@ BEGIN
     END IF;
 END $$;
 
+/*
+Category names are not unique within their parent, and separately unique
+among root categories. Two indexes rather than one because NULL never equals NULL
+in Postgres. A plain UNIQUE (parent_id, name) would let any number of identically
+named root categories through.
+*/
 CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_unique_parent_name
     ON categories(parent_id, name)
     WHERE parent_id IS NOT NULL;
@@ -93,16 +130,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_unique_root_name
     ON categories(name)
     WHERE parent_id IS NULL;
 
-/* Optional: enable only if duplicate process-flow-direction exchanges should never exist in the source data.
+/*
+Left off deliberately: ELCD records the same flow more than once in the same
+process and direction (867 such combinations in the current load, e.g. barite
+appearing twice in process 5 at 2.3e-15 and 2.4e-4 kg). These are separate entries,
+not duplicates, so aggregation sums them rather than picking one. Enforcing uniqueness
+here would reject valid source data.
 
 ALTER TABLE exchanges
     ADD CONSTRAINT uq_exchanges_process_flow_direction
     UNIQUE (process_id, flow_id, direction);
 */
 
-/*
--- COMMENTS
-*/
+-- TABLE AND COLUMN COMMENTS
+-- Visible from psql (\d+) without opening this file
 
 COMMENT ON TABLE processes IS
     'Industrial or agricultural activities. The nodes of the LCA supply chain graph.';
