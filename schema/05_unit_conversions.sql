@@ -1,38 +1,24 @@
 /*
-- LCA Supply Chain Database
-- File: 05_unit_conversions.sql
-- Description: Unit compatibility/conversion model, plus a conversion
-  function and a flagging view for exchanges whose unit doesn't match their
-  flow's default unit.
+Unit conversion: which units can convert into which, a function that does it,
+and a view that flags exchanges whose unit disagrees with their flow's.
 
-Run after 01_create_tables.sql, 02_constraints.sql, and 03_seed_data.sql.
+Run after 01_create_tables.sql, 02_constraints.sql and 03_seed_data.sql.
 
-DESIGN
-Units are convertible only within the same "conversion group" -- the real
-compatibility key is `unit_group_external_id`, NOT the free-text `dimension`
-column. `dimension` (mass/energy/volume/...) is a best-effort human-readable
-label inferred from unit group names during ELCD transform and is NOT safe
-to use for conversion math: two differently-sourced unit groups could both
-get labeled "mass" by that inference without sharing a reference unit.
-`unit_group_external_id` instead tracks the actual ILCD unit group (or, for
-hand-written seed units, a synthetic slug -- see UPDATE below), so conversion
-is only ever attempted between units that are known to share one reference
-point.
+The key decision is what makes two units compatible. The obvious answer is the
+'dimension' column (both says "mass", so convert). That is unsafe: dimensions is
+a label inferred from unit gorup names during transform, and two unrelated groups
+can end up with the same label without sharing a reference point.
 
-Within a conversion group, `to_base_unit_factor` says: multiply an amount in
-this unit by this factor to get the amount in the group's base unit.
-Exactly one unit per group should have `is_base_unit = TRUE` (factor 1 by
-construction, though this isn't enforced beyond convention + the partial
-unique index below).
+The real key is 'unit_group_external_id'. ILCD already carries this structure:
+each unit group names one reference unit, and every other unit's meanValue is
+its factor to that group's reference. Conversion is only every attempted withing
+a group.
 
-For ELCD-loaded units, this is not invented: ILCD unit groups already carry
-this exact structure (referenceToReferenceUnit + each unit's meanValue is
-"how many reference-units equal 1 of this unit" -- confirmed against the
-XML files in data/raw/elcd_3_2/exported/ilcd/ILCD/unitgroups). transform.py already resolves this
-per unit (`source_unit_group_uuid`, `conversion_to_reference`) but
-load_to_postgres.py currently discards both fields; wiring that through is
-listed as follow-up work below so this file can ship the schema/function
-independent of that loader change.
+Known gap: load_to_postgres.py discards the unit group fields transform.py already
+resolves, so ELCD-loaded units have NULL unit_group_external_id and convert_amount()
+returns NULL for every pair of them. That is correct behavior (no group, no guess), but
+it means the function is currently only excercised by the seed units. See the FOLLOW-UP
+note below.
 */
 
 ALTER TABLE units ADD COLUMN IF NOT EXISTS unit_group_external_id VARCHAR(255);
@@ -52,9 +38,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_units_one_base_per_group
     ON units(unit_group_external_id)
     WHERE is_base_unit = TRUE;
 
--- Populate the hand-written seed units (schema/03_seed_data.sql). Matched by
--- name, not id, so this stays correct regardless of insertion order. Slugs
--- are synthetic (no ILCD unit group backs the seed data) but stable.
+-- Seed units. Matched by name rather than id so this survives a change in
+-- insertion order. The slugs are synthetic (no ILCD unit gorup backes the hand-written data),
+-- but stable
 UPDATE units SET unit_group_external_id = 'seed:mass', to_base_unit_factor = 1, is_base_unit = TRUE WHERE name = 'kg';
 UPDATE units SET unit_group_external_id = 'seed:mass', to_base_unit_factor = 1000, is_base_unit = FALSE WHERE name = 't';
 UPDATE units SET unit_group_external_id = 'seed:energy', to_base_unit_factor = 1, is_base_unit = TRUE WHERE name = 'MJ';
@@ -64,24 +50,18 @@ UPDATE units SET unit_group_external_id = 'seed:transport', to_base_unit_factor 
 UPDATE units SET unit_group_external_id = 'seed:item', to_base_unit_factor = 1, is_base_unit = TRUE WHERE name = 'p';
 UPDATE units SET unit_group_external_id = 'seed:area', to_base_unit_factor = 1, is_base_unit = TRUE WHERE name = 'm2';
 
--- FOLLOW-UP (not done here): wire load_to_postgres.py's upsert_units() to
--- populate unit_group_external_id from each unit's source_unit_group_uuid
--- and to_base_unit_factor from its conversion_to_reference (both already
--- computed in transform.py, both currently discarded at load time), and
--- is_base_unit from whether the unit is its group's reference unit
--- (transform.py's reference_unit_by_group_uuid). Until that's done, ELCD-
--- loaded units have NULL unit_group_external_id and convert_amount() below
--- will correctly return NULL (unconvertible/unmodeled) for all of them
--- rather than guessing.
-
+/*
+FOLLOW-UP: wire load_to_postgres.py's upsert_units() to carry through what
+transform.py already computes (source_unit_group_uuid into unit_group_external_id,
+conversion_to_reference into to_base_unit_factor, and reference_unit_by_group_uuid
+into is_base_unit). Both fields are resolved at transform time and dropped at load time.
+ */
 
 /*
---- CONVERSION FUNCTION ---
-Returns NULL (never raises) when a conversion can't be performed -- same
-unit, different-but-unmodeled units, or a genuine dimensional mismatch all
-collapse to NULL so callers can filter/count in a single set-based query
-instead of catching per-row exceptions. See v_exchange_unit_flags below and
-calculate_direct_impacts (06_lcia_calculation.sql) for how callers use this.
+Returns NULL rather than raising when a conversion cannot be done (whether the units
+are unmodelled, in different groups, or genuinely incompatible). That lets callers filter
+and count in ordinary set-based SQL instead of catching per-row expections, and it means
+a wrong number can never come out of here.
 */
 CREATE OR REPLACE FUNCTION convert_amount(
     p_amount NUMERIC,
@@ -101,6 +81,8 @@ BEGIN
         RETURN NULL;
     END IF;
 
+    -- Same unit: nothing to do. This is the path most ELCD exchanges take,
+    -- which is why the missing unit groups have not broken anything yet.
     IF p_from_unit_id = p_to_unit_id THEN
         RETURN p_amount;
     END IF;
@@ -141,19 +123,17 @@ COMMENT ON FUNCTION units_convertible(INT, INT) IS
 
 
 /*
---- FLAGGING VIEW ---
-Every exchange compared against its flow's default unit. unit_status is the
-actionable column:
-  matches_flow_default -- unit_id equals the flow's default unit_id (the
-                           common case, no conversion needed).
-  convertible           -- different unit, but convert_amount() can bridge it
-                           (amount_in_flow_default_unit is populated).
-  incompatible          -- different unit, not convertible: either a genuine
-                           dimensional mismatch or an unmodeled conversion
-                           group (see follow-up note above for ELCD units).
-                           This is the flag the roadmap asks for -- query
-                           for unit_status = 'incompatible' to find them.
-  unit_missing          -- exchange or flow has no unit_id at all.
+Every exchange's unit against the flow's default. unit_status sorts them into
+four buckets:
+
+    matches_flow_default    same unit, nothing to do
+    convertibale            diffrent unit, bridged (amount_in_flow_default_unit
+                            is populated)
+    incompatible            different unit, not bridgeable. either a real dimensional
+                            mismatch in the source data or a conversion group with no factors yet
+    unit_missing            exchagne or flow has no unit at all
+
+The two causes behind 'incompatible' need a human to tell apart. See queries/08_unit_conversion_check.sql
 */
 CREATE OR REPLACE VIEW v_exchange_unit_flags AS
 SELECT
