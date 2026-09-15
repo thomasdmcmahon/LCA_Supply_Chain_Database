@@ -19,11 +19,12 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_INPUT_DIR = Path("data/processed/elcd_3_2")
 DEFAULT_OUTPUT_DIR = Path("data/processed/elcd_3_2/transformed")
 SOURCE_DATASET = "ELCD 3.2 via openLCA ILCD export"
 
+# Display names for the codes worth spelling out. Anything else falls back to
+# the code itself, which is fine, the code is what queries filter on.
 GEOGRAPHY_NAMES = {
     "GLO": "Global",
     "RER": "Europe",
@@ -62,6 +63,13 @@ def write_json(path: Path, payload: Any) -> None:
 
 
 def infer_dimension(unit_group_name: str | None) -> str | None:
+    """Guess a physical dimension from an ILCD unit group name.
+
+    A descriptive label only. It is NOT safe for deciding whether two units
+    can convert into each other. Two unrelated unit groups can land on the same
+    label without sharing a reference point. The real compatability key is the
+    unit group uuid; see units.unit_group_external_id and convert_amount() in
+    schema/05_unit_conversions.sql"""
     if not unit_group_name:
         return None
 
@@ -87,9 +95,13 @@ def infer_dimension(unit_group_name: str | None) -> str | None:
 
 def map_flow_type(flow: dict[str, Any]) -> str:
     dataset_type = (flow.get("dataset_type") or "").lower()
-    class_names = [str(item.get("name") or "").lower() for item in flow.get("classifications", [])]
+    class_names = [
+        str(item.get("name") or "").lower() for item in flow.get("classifications", [])
+    ]
 
-    if "elementary flow" in dataset_type or any("elementary flows" == name for name in class_names):
+    if "elementary flow" in dataset_type or any(
+        "elementary flows" == name for name in class_names
+    ):
         return "elementary"
     if "waste" in dataset_type or any("waste" in name for name in class_names):
         return "waste"
@@ -111,7 +123,11 @@ def build_categories(processes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # on each parsed process.
     for process in processes:
         classes = sorted(
-            [item for item in process.get("classifications", []) if item.get("id") and item.get("name")],
+            [
+                item
+                for item in process.get("classifications", [])
+                if item.get("id") and item.get("name")
+            ],
             key=lambda item: int(item.get("level") or 0),
         )
         full_parts: list[str] = []
@@ -129,10 +145,14 @@ def build_categories(processes: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 }
             parent_id = category_id
 
-    return sorted(categories_by_id.values(), key=lambda item: (item["level"], item["full_path"]))
+    return sorted(
+        categories_by_id.values(), key=lambda item: (item["level"], item["full_path"])
+    )
 
 
-def build_units(unit_groups: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+def build_units(
+    unit_groups: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     units_by_uuid: dict[str, dict[str, Any]] = {}
     unit_group_by_uuid: dict[str, dict[str, Any]] = {}
     reference_unit_by_group_uuid: dict[str, dict[str, Any]] = {}
@@ -154,6 +174,9 @@ def build_units(unit_groups: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
                     "external_id": unit_uuid,
                     "name": unit.get("name"),
                     "dimension": dimension,
+                    # Resolved here but currently dropped by
+                    # load_to_postgres.upsert_units(), which is why ELCD units
+                    # end up with a NULL for all of them.
                     "source_unit_group_uuid": group_uuid,
                     "source_unit_group_name": group.get("name"),
                     "conversion_to_reference": unit.get("mean_value"),
@@ -174,7 +197,9 @@ def build_units(unit_groups: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
         name = item.get("name")
         if not name or name_counts[name] == 1:
             continue
-        group_name = item.get("source_unit_group_name") or item.get("dimension") or "unit"
+        group_name = (
+            item.get("source_unit_group_name") or item.get("dimension") or "unit"
+        )
         item["name"] = f"{name} [{group_name}]"
 
     # If a collision still remains after using the unit-group name, append a
@@ -195,7 +220,9 @@ def build_flows(
     flow_properties: list[dict[str, Any]],
     reference_unit_by_group_uuid: dict[str, dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], list[dict[str, Any]]]:
-    flow_property_by_uuid = {item["uuid"]: item for item in flow_properties if item.get("uuid")}
+    flow_property_by_uuid = {
+        item["uuid"]: item for item in flow_properties if item.get("uuid")
+    }
     transformed: list[dict[str, Any]] = []
     flow_by_uuid: dict[str, dict[str, Any]] = {}
     unresolved: list[dict[str, Any]] = []
@@ -205,16 +232,26 @@ def build_flows(
     for flow in flows:
         reference_property_uuid = None
         for property_record in flow.get("flow_properties", []):
-            if property_record.get("internal_id") == flow.get("reference_flow_property_internal_id"):
+            if property_record.get("internal_id") == flow.get(
+                "reference_flow_property_internal_id"
+            ):
                 reference_property_uuid = property_record.get("flow_property_uuid")
                 break
         if reference_property_uuid is None and flow.get("flow_properties"):
-            reference_property_uuid = flow["flow_properties"][0].get("flow_property_uuid")
+            reference_property_uuid = flow["flow_properties"][0].get(
+                "flow_property_uuid"
+            )
 
-        flow_property = flow_property_by_uuid.get(reference_property_uuid) if reference_property_uuid else None
+        flow_property = (
+            flow_property_by_uuid.get(reference_property_uuid)
+            if reference_property_uuid
+            else None
+        )
         reference_unit = None
         if flow_property is not None:
-            reference_unit = reference_unit_by_group_uuid.get(flow_property.get("reference_unit_group_uuid"))
+            reference_unit = reference_unit_by_group_uuid.get(
+                flow_property.get("reference_unit_group_uuid")
+            )
 
         if reference_unit is None:
             unresolved.append(
@@ -230,7 +267,9 @@ def build_flows(
             "name": flow.get("name"),
             "description": None,
             "flow_type": map_flow_type(flow),
-            "unit_external_id": None if reference_unit is None else reference_unit.get("external_id"),
+            "unit_external_id": None
+            if reference_unit is None
+            else reference_unit.get("external_id"),
             "cas_number": flow.get("cas_number"),
             "reference_flow_property_uuid": reference_property_uuid,
             "source_dataset": SOURCE_DATASET,
@@ -258,10 +297,16 @@ def build_processes(
         deepest_category_id = classes[-1]["id"] if classes else None
         geography_code = process.get("geography_code")
         if geography_code:
-            geographies_by_code.setdefault(geography_code, geography_record(geography_code))
+            geographies_by_code.setdefault(
+                geography_code, geography_record(geography_code)
+            )
 
         try:
-            reference_year = int(process["reference_year"]) if process.get("reference_year") else None
+            reference_year = (
+                int(process["reference_year"])
+                if process.get("reference_year")
+                else None
+            )
         except ValueError:
             reference_year = None
 
@@ -340,7 +385,9 @@ def main() -> int:
     output_dir = Path(args.output_dir).expanduser().resolve()
 
     if not input_dir.exists() or not input_dir.is_dir():
-        raise SystemExit(f"Input directory does not exist or is not a directory: {input_dir}")
+        raise SystemExit(
+            f"Input directory does not exist or is not a directory: {input_dir}"
+        )
 
     processes = read_json(input_dir / "processes.json")
     flows = read_json(input_dir / "flows.json")
@@ -382,7 +429,9 @@ def main() -> int:
     write_json(output_dir / "processes.json", transformed_processes)
     write_json(output_dir / "exchanges.json", transformed_exchanges)
     write_json(output_dir / "unresolved_flow_units.json", unresolved_flow_units)
-    write_json(output_dir / "unresolved_exchange_references.json", unresolved_exchange_refs)
+    write_json(
+        output_dir / "unresolved_exchange_references.json", unresolved_exchange_refs
+    )
     write_json(output_dir / "summary.json", summary)
 
     print(json.dumps(summary, indent=2))
