@@ -16,12 +16,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import xml.etree.ElementTree as ET
 from collections import Counter
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
-import xml.etree.ElementTree as ET
-
 
 DEFAULT_INPUT_DIR = Path("data/raw/elcd_3_2/exported/ilcd/ILCD")
 DEFAULT_OUTPUT_DIR = Path("data/processed/elcd_3_2")
@@ -46,6 +45,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def local_name(tag: str) -> str:
+    """Strip the namespace. ElementTree returns tags as
+    '{namespace}tagName', and ILCD uses several namespaces."""
     if "}" in tag:
         return tag.rsplit("}", 1)[1]
     return tag
@@ -59,6 +60,8 @@ def element_text(element: ET.Element | None) -> str | None:
 
 
 def find_child(element: ET.Element, tag_name: str) -> ET.Element | None:
+    """Direct children only. ILCD nests deeply, so this is deliberately
+    shallow (see first_descendant_text for the recursive version)."""
     for child in element:
         if local_name(child.tag) == tag_name:
             return child
@@ -82,7 +85,14 @@ def first_descendant_text(element: ET.Element, names: list[str]) -> str | None:
 def parse_decimal_str(text: str | None) -> str | None:
     """Validate a numeric string and return it unchanged, as a string.
 
-    ELCD amounts go down to values like "5.38063410297918E-17". Python's float can't hold that many digits, so calling float() here would round teh value before it ever reached the database. Decimal is used only to check the text is a valid number; the original string is what we return. The whole pipeline carries amounts as text until load_to_postgres.py converts to Decimal at insertion.
+    ELCD amounts go down to values like '5.38063410292918E-17'. Python's float
+    cannot hold that many digits, so calling float() here would round the value before
+    it ever reached the database. Decimal is used only to check that the text is a valid
+    number; the original string is what comes back. Amounts stay text through the whole
+    pipeline until load_to_postgres.py converts them at insertion.
+
+    Returns None for text that will not parse. The loader counts those rows and
+    reports them as exchange_rows_skipped_unparasable_amount.
     """
     if text is None:
         return None
@@ -94,6 +104,7 @@ def parse_decimal_str(text: str | None) -> str | None:
     except InvalidOperation:
         return None
     return stripped
+
 
 def parse_process(path: Path) -> dict[str, Any]:
     root = ET.parse(path).getroot()
@@ -111,7 +122,11 @@ def parse_process(path: Path) -> dict[str, Any]:
 
     reference_flow_ids = {
         element_text(ref)
-        for ref in (find_children(quantitative_reference, "referenceToReferenceFlow") if quantitative_reference is not None else [])
+        for ref in (
+            find_children(quantitative_reference, "referenceToReferenceFlow")
+            if quantitative_reference is not None
+            else []
+        )
         if element_text(ref)
     }
 
@@ -129,7 +144,8 @@ def parse_process(path: Path) -> dict[str, Any]:
                     classifications.append(
                         {
                             "level": class_element.attrib.get("level"),
-                            "id": class_element.attrib.get("classId") or class_element.attrib.get("catId"),
+                            "id": class_element.attrib.get("classId")
+                            or class_element.attrib.get("catId"),
                             "name": element_text(class_element),
                         }
                     )
@@ -146,6 +162,11 @@ def parse_process(path: Path) -> dict[str, Any]:
             if normalized_direction:
                 exchange_direction_counts[normalized_direction] += 1
 
+            # ILCD stores the amount in up to three places. OpenLCA's
+            # own extension attribute is the one to trust when present,
+            # since it is what the exporter actually wrote; resultingAmount
+            # and meanAmount are kept alongside so a mismatch stays visible
+            # rather than being resolved silently here.
             internal_id = exchange.attrib.get("dataSetInternalID")
             amount_text = (
                 exchange.attrib.get("{http://openlca.org/ilcd-extensions}amount")
@@ -156,14 +177,26 @@ def parse_process(path: Path) -> dict[str, Any]:
                 {
                     "internal_id": internal_id,
                     "is_reference_flow": internal_id in reference_flow_ids,
-                    "flow_uuid": None if flow_ref is None else flow_ref.attrib.get("refObjectId"),
-                    "flow_name": first_descendant_text(flow_ref, ["shortDescription"]) if flow_ref is not None else None,
+                    "flow_uuid": None
+                    if flow_ref is None
+                    else flow_ref.attrib.get("refObjectId"),
+                    "flow_name": first_descendant_text(flow_ref, ["shortDescription"])
+                    if flow_ref is not None
+                    else None,
                     "direction": normalized_direction,
-                    "mean_amount": parse_decimal_str(element_text(find_child(exchange, "meanAmount"))),
-                    "resulting_amount": parse_decimal_str(element_text(find_child(exchange, "resultingAmount"))),
+                    "mean_amount": parse_decimal_str(
+                        element_text(find_child(exchange, "meanAmount"))
+                    ),
+                    "resulting_amount": parse_decimal_str(
+                        element_text(find_child(exchange, "resultingAmount"))
+                    ),
                     "amount": parse_decimal_str(amount_text),
-                    "unit_uuid": exchange.attrib.get("{http://openlca.org/ilcd-extensions}unitId"),
-                    "property_uuid": exchange.attrib.get("{http://openlca.org/ilcd-extensions}propertyId"),
+                    "unit_uuid": exchange.attrib.get(
+                        "{http://openlca.org/ilcd-extensions}unitId"
+                    ),
+                    "property_uuid": exchange.attrib.get(
+                        "{http://openlca.org/ilcd-extensions}propertyId"
+                    ),
                 }
             )
 
@@ -174,18 +207,34 @@ def parse_process(path: Path) -> dict[str, Any]:
         else find_child(administrative_information, "publicationAndOwnership")
     )
 
-    location_element = None if geography is None else find_child(geography, "locationOfOperationSupplyOrProduction")
+    location_element = (
+        None
+        if geography is None
+        else find_child(geography, "locationOfOperationSupplyOrProduction")
+    )
 
     return {
-        "uuid": first_descendant_text(data_set_information, ["UUID"]) if data_set_information is not None else None,
+        "uuid": first_descendant_text(data_set_information, ["UUID"])
+        if data_set_information is not None
+        else None,
         "name": first_descendant_text(data_set_information, ["baseName", "name"]),
-        "version": first_descendant_text(publication, ["dataSetVersion"]) if publication is not None else None,
-        "reference_year": first_descendant_text(time_info, ["referenceYear"]) if time_info is not None else None,
-        "valid_until": first_descendant_text(time_info, ["dataSetValidUntil"]) if time_info is not None else None,
-        "geography_code": None if location_element is None else location_element.attrib.get("location"),
+        "version": first_descendant_text(publication, ["dataSetVersion"])
+        if publication is not None
+        else None,
+        "reference_year": first_descendant_text(time_info, ["referenceYear"])
+        if time_info is not None
+        else None,
+        "valid_until": first_descendant_text(time_info, ["dataSetValidUntil"])
+        if time_info is not None
+        else None,
+        "geography_code": None
+        if location_element is None
+        else location_element.attrib.get("location"),
         "technology_description": first_descendant_text(
             technology, ["technologyDescriptionAndIncludedProcesses"]
-        ) if technology is not None else None,
+        )
+        if technology is not None
+        else None,
         "classifications": classifications,
         "reference_flow_internal_ids": sorted(reference_flow_ids),
         "exchange_count": len(exchanges),
@@ -224,7 +273,8 @@ def parse_flow(path: Path) -> dict[str, Any]:
                     classifications.append(
                         {
                             "level": class_element.attrib.get("level"),
-                            "id": class_element.attrib.get("classId") or class_element.attrib.get("catId"),
+                            "id": class_element.attrib.get("classId")
+                            or class_element.attrib.get("catId"),
                             "name": element_text(class_element),
                         }
                     )
@@ -239,21 +289,37 @@ def parse_flow(path: Path) -> dict[str, Any]:
             flow_properties.append(
                 {
                     "internal_id": flow_property.attrib.get("dataSetInternalID"),
-                    "flow_property_uuid": None if ref is None else ref.attrib.get("refObjectId"),
-                    "flow_property_name": first_descendant_text(ref, ["shortDescription"]) if ref is not None else None,
-                    "mean_value": parse_decimal_str(element_text(find_child(flow_property, "meanValue"))),
+                    "flow_property_uuid": None
+                    if ref is None
+                    else ref.attrib.get("refObjectId"),
+                    "flow_property_name": first_descendant_text(
+                        ref, ["shortDescription"]
+                    )
+                    if ref is not None
+                    else None,
+                    "mean_value": parse_decimal_str(
+                        element_text(find_child(flow_property, "meanValue"))
+                    ),
                 }
             )
 
     return {
-        "uuid": first_descendant_text(data_set_information, ["UUID"]) if data_set_information is not None else None,
+        "uuid": first_descendant_text(data_set_information, ["UUID"])
+        if data_set_information is not None
+        else None,
         "name": first_descendant_text(data_set_information, ["baseName", "name"]),
-        "version": first_descendant_text(publication, ["dataSetVersion"]) if publication is not None else None,
+        "version": first_descendant_text(publication, ["dataSetVersion"])
+        if publication is not None
+        else None,
         "dataset_type": first_descendant_text(root, ["typeOfDataSet"]),
-        "cas_number": first_descendant_text(data_set_information, ["CASNumber"]) if data_set_information is not None else None,
+        "cas_number": first_descendant_text(data_set_information, ["CASNumber"])
+        if data_set_information is not None
+        else None,
         "classifications": classifications,
         "reference_flow_property_internal_id": (
-            first_descendant_text(quantitative_reference, ["referenceToReferenceFlowProperty"])
+            first_descendant_text(
+                quantitative_reference, ["referenceToReferenceFlowProperty"]
+            )
             if quantitative_reference is not None
             else None
         ),
@@ -283,11 +349,21 @@ def parse_flow_property(path: Path) -> dict[str, Any]:
     )
 
     return {
-        "uuid": first_descendant_text(data_set_information, ["UUID"]) if data_set_information is not None else None,
+        "uuid": first_descendant_text(data_set_information, ["UUID"])
+        if data_set_information is not None
+        else None,
         "name": first_descendant_text(data_set_information, ["name"]),
-        "version": first_descendant_text(publication, ["dataSetVersion"]) if publication is not None else None,
-        "reference_unit_group_uuid": None if ref_group is None else ref_group.attrib.get("refObjectId"),
-        "reference_unit_group_name": first_descendant_text(ref_group, ["shortDescription"]) if ref_group is not None else None,
+        "version": first_descendant_text(publication, ["dataSetVersion"])
+        if publication is not None
+        else None,
+        "reference_unit_group_uuid": None
+        if ref_group is None
+        else ref_group.attrib.get("refObjectId"),
+        "reference_unit_group_name": first_descendant_text(
+            ref_group, ["shortDescription"]
+        )
+        if ref_group is not None
+        else None,
         "source_file": str(path),
     }
 
@@ -314,16 +390,24 @@ def parse_unit_group(path: Path) -> dict[str, Any]:
             units.append(
                 {
                     "internal_id": unit.attrib.get("dataSetInternalID"),
-                    "uuid": unit.attrib.get("{http://openlca.org/ilcd-extensions}unitId"),
+                    "uuid": unit.attrib.get(
+                        "{http://openlca.org/ilcd-extensions}unitId"
+                    ),
                     "name": first_descendant_text(unit, ["name"]),
-                    "mean_value": parse_decimal_str(first_descendant_text(unit, ["meanValue"])),
+                    "mean_value": parse_decimal_str(
+                        first_descendant_text(unit, ["meanValue"])
+                    ),
                 }
             )
 
     return {
-        "uuid": first_descendant_text(data_set_information, ["UUID"]) if data_set_information is not None else None,
+        "uuid": first_descendant_text(data_set_information, ["UUID"])
+        if data_set_information is not None
+        else None,
         "name": first_descendant_text(data_set_information, ["name"]),
-        "version": first_descendant_text(publication, ["dataSetVersion"]) if publication is not None else None,
+        "version": first_descendant_text(publication, ["dataSetVersion"])
+        if publication is not None
+        else None,
         "reference_unit_internal_id": (
             first_descendant_text(quantitative_reference, ["referenceToReferenceUnit"])
             if quantitative_reference is not None
@@ -346,18 +430,16 @@ def main() -> int:
     output_dir = Path(args.output_dir).expanduser().resolve()
 
     if not input_dir.exists() or not input_dir.is_dir():
-        raise SystemExit(f"Input directory does not exist or is not a directory: {input_dir}")
+        raise SystemExit(
+            f"Input directory does not exist or is not a directory: {input_dir}"
+        )
 
     # Parse each ILCD record family into a lighter JSON form before we do any
     # schema-specific reshaping.
     processes = [
-        parse_process(path)
-        for path in sorted((input_dir / "processes").glob("*.xml"))
+        parse_process(path) for path in sorted((input_dir / "processes").glob("*.xml"))
     ]
-    flows = [
-        parse_flow(path)
-        for path in sorted((input_dir / "flows").glob("*.xml"))
-    ]
+    flows = [parse_flow(path) for path in sorted((input_dir / "flows").glob("*.xml"))]
     flow_properties = [
         parse_flow_property(path)
         for path in sorted((input_dir / "flowproperties").glob("*.xml"))
@@ -375,7 +457,9 @@ def main() -> int:
             "flows": len(flows),
             "flow_properties": len(flow_properties),
             "unit_groups": len(unit_groups),
-            "process_exchanges": sum(process["exchange_count"] for process in processes),
+            "process_exchanges": sum(
+                process["exchange_count"] for process in processes
+            ),
         },
         "process_names": [process["name"] for process in processes],
     }
