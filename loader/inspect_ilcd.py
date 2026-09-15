@@ -1,26 +1,25 @@
-"""Inspect an ILCD export directory before building the full parser.
+"""Inspect an ILCD export directly before buildign the full parser.
 
 The goal of this script is to answer a few practical questions early:
 
-- Does the export directory actually contain XML files?
-- Which folders are present, and how many XML files are in each?
-- Do the filenames or XML roots suggest process, flow, unit, or source data?
-- Can we extract a few identifying metadata fields from sample files?
+    - Does the export directory actually contain XML files?
+    - Which folders are present, and how many XML files are in each?
+    - Do the filenames or XML root suggest process, flow, unit, or source data?
+    - Can we extract a few identifying metadata fields from sample files?
 
-This helps stabilize the next pipeline step (`parse_ilcd.py`) around the
-real export structure instead of assumptions.
+This ran before parse_ilcd.py existed and is kept as a way to santiy-check
+a fresh export: right folders, right counts, files that actually parse.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
+import xml.etree.ElementTree as ET
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
-import sys
-import xml.etree.ElementTree as ET
-
 
 DEFAULT_EXPORT_DIR = Path("data/raw/elcd_3_2/exported/ilcd")
 SAMPLE_LIMIT = 3
@@ -28,6 +27,8 @@ SAMPLE_LIMIT = 3
 
 @dataclass
 class SampleFile:
+    """One inspected file. A dataclass is asdict() gives clean JSON."""
+
     path: str
     root_tag: str
     inferred_kind: str
@@ -44,10 +45,7 @@ def parse_args() -> argparse.Namespace:
         "export_dir",
         nargs="?",
         default=str(DEFAULT_EXPORT_DIR),
-        help=(
-            "Path to the ILCD export directory. "
-            f"Defaults to {DEFAULT_EXPORT_DIR}."
-        ),
+        help=(f"Path to the ILCD export directory. Defaults to {DEFAULT_EXPORT_DIR}."),
     )
     parser.add_argument(
         "--json",
@@ -70,9 +68,14 @@ def strip_namespace(tag: str) -> str:
 
 
 def find_first_text(root: ET.Element, candidates: list[str]) -> str | None:
+    """Return the first non-empty text from any matching descendant.
+
+    Tag matching is case-insensitive: ILCD uses camelCase (baseName,
+    dataSetVersion) but callers pass whatever reads naturally.
+    """
+    wanted = {candidate.lower() for candidate in candidates}
     for element in root.iter():
-        tag = strip_namespace(element.tag).lower()
-        if tag in candidates:
+        if strip_namespace(element.tag).lower() in wanted:
             text = (element.text or "").strip()
             if text:
                 return text
@@ -80,6 +83,10 @@ def find_first_text(root: ET.Element, candidates: list[str]) -> str | None:
 
 
 def infer_kind(path: Path, root_tag: str) -> str:
+    """Guess the record type from the folder name or root tag.
+
+    A guess, not a parse (this script exists to survey an export before
+    the real parser is wrriten). parse_ilcd.py reads the folders by name instead."""
     joined_parts = "/".join(part.lower() for part in path.parts)
     root_lower = root_tag.lower()
 
@@ -129,19 +136,16 @@ def parse_sample(xml_path: Path, base_dir: Path) -> SampleFile:
 
 def collect_summary(export_dir: Path, samples_per_kind: int) -> dict:
     if not export_dir.exists():
-        raise FileNotFoundError(
-            f"Export directory does not exist: {export_dir}"
-        )
+        raise FileNotFoundError(f"Export directory does not exist: {export_dir}")
     if not export_dir.is_dir():
-        raise NotADirectoryError(
-            f"Export path is not a directory: {export_dir}"
-        )
+        raise NotADirectoryError(f"Export path is not a directory: {export_dir}")
 
     xml_files = sorted(export_dir.rglob("*.xml"))
     xml_counts_by_folder: Counter[str] = Counter()
     sample_groups: dict[str, list[SampleFile]] = {}
     parse_errors: list[dict[str, str]] = []
     root_tag_counts: Counter[str] = Counter()
+    inferred_kind_counts: Counter[str] = Counter()
 
     # Walk the export once and collect a compact inventory we can use to
     # decide how the real parser should be shaped.
@@ -165,33 +169,23 @@ def collect_summary(export_dir: Path, samples_per_kind: int) -> dict:
             continue
 
         root_tag_counts[sample.root_tag] += 1
+        inferred_kind_counts[sample.inferred_kind] += 1
         group = sample_groups.setdefault(sample.inferred_kind, [])
         if len(group) < samples_per_kind:
             group.append(sample)
-
-    inferred_kind_counts = Counter()
-    for samples in sample_groups.values():
-        for sample in samples:
-            inferred_kind_counts[sample.inferred_kind] += 1
 
     return {
         "export_dir": str(export_dir),
         "exists": True,
         "xml_file_count": len(xml_files),
-        "folder_count": len(
-            [
-                path
-                for path in export_dir.rglob("*")
-                if path.is_dir()
-            ]
-        ),
+        "folder_count": len([path for path in export_dir.rglob("*") if path.is_dir()]),
         "xml_counts_by_folder": dict(sorted(xml_counts_by_folder.items())),
         "root_tag_counts": dict(root_tag_counts.most_common()),
         "sample_files_by_kind": {
             kind: [asdict(sample) for sample in samples]
             for kind, samples in sorted(sample_groups.items())
         },
-        "sampled_kind_count": dict(sorted(inferred_kind_counts.items())),
+        "kind_counts": dict(sorted(inferred_kind_counts.items())),
         "parse_errors": parse_errors,
     }
 
@@ -243,6 +237,7 @@ def render_text(summary: dict) -> str:
 
     return "\n".join(lines)
 
+
 def main() -> int:
     args = parse_args()
     export_dir = Path(args.export_dir).expanduser().resolve()
@@ -260,6 +255,7 @@ def main() -> int:
     else:
         print(render_text(summary))
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
