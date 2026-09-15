@@ -1,66 +1,52 @@
 /*
-- LCA Supply Chain Database
-- File: 07_supply_chain_rollup.sql
-- Description: Generic, parameterized cradle-to-gate supply-chain rollup.
-  Generalizes the manual example in queries/06_supply_chain_graph.sql into
-  callable functions: automatic scaling factors, cycle-safe termination, and
-  an aggregated elementary inventory usable directly by the LCIA calculation
-  engine (06_lcia_calculation.sql).
+The supply chain rollup: walk upstream from a process, work out how much of each upstream
+process is needed, and add up what the whole chain emits.
 
-Run after 01_create_tables.sql, 02_constraints.sql, 03_seed_data.sql, and
-05_unit_conversions.sql (needs convert_amount()).
+This generalizes the hand-written example in queries/06_supply_chain_graph.sql,
+where the scaling factors were typed in by hand for one specific chain.
 
-GRAPH TRAVERSAL PATTERN
-Unchanged from queries/06_supply_chain_graph.sql: a process's product INPUT
-flow is matched to the upstream process that declares the same flow as its
-is_reference_flow OUTPUT. Elementary flows are leaves, not traversed. If more
-than one process declares the same flow as its reference output, the join
-fans out to all of them (the schema doesn't enforce a single producer per
-flow) -- that's existing, expected behavior, not something this file
-resolves.
+Run after 01, 02, 03 and 05 (needs convert_amount())
+
+TRAVERSAL
+A process's product input is matched to the upstream process that declares
+the same flow as its reference output. Elementary flows are leaves, nothing produces them,
+so they are not followed.
+
+The schema does not enfore one producer per flow, so if several processes declare the
+same reference output, the join fans out to all of them. That is not hypothetical:
+ELCD models European Electricity as 24 separate national processes sharing one flow,
+so a single electricity input resolves to all 24 branches. Expected behavior, and this file
+does not try to pick one.
 
 SCALING
-Every exchange amount is "per one unit of the process's own reference flow"
-(see exchanges.amount comment in 01_create_tables.sql). So the amount needed
-from an upstream process, expressed in the upstream's own reference-flow
-unit, divided by the upstream's reference-flow amount, is exactly the
-multiplier to scale that upstream process's whole exchange list by. This
-compounds multiplicatively down the chain:
+Every exchagne amount is already "per one unit of that process's own reference flow".
+So the multiplier for an upstream process is just the amount needed divided by the
+amount it produces, compoudning down the chain:
 
     scale(start)    = target_amount / start.reference_amount
-    scale(upstream)  = scale(consumer) * (input_amount_in_upstream_ref_unit / upstream.reference_amount)
+    scale(upstream) = scale(consumer)
+                        * input (amount_in_upstream_ref_unit
+                        / upstream.reference_amount)
 
-convert_amount() reconciles input_amount into the upstream's reference-flow
-unit first, in case they're recorded in different-but-compatible units. If
-they're not convertible, that branch's cumulative_scale becomes NULL and
-stays NULL for everything beneath it (traversal continues -- so the broken
-branch is still visible for debugging -- but nothing under it contributes to
-the aggregated inventory).
+convert_amount() reconciles the input into the upstream's reference unit first.
+If they cannot convert, that branch's cumulative_scale goes NULL and stays NULL
+for everything below it (traversal continues so the broken branch stays visible,
+but nothing under it reaches the inventory.)
 
-Hand-verified against the seed wheat-flour example (target: 1 kg flour from
-process id 3): scale(flour milling)=1, scale(wheat farming)=1.35,
-scale(lorry transport)=0.27 -- matching queries/06_supply_chain_graph.sql's
-manual VALUES list exactly. See queries/10_supply_chain_rollup_examples.sql
-for the full worked comparison.
+Hand-verified against the seed data (1 kg of flour from process 3):
+milling = 1, wheat farming = 1.35, lorry transport = 0.27, matching the manual
+VALUES list in queries/06 exactly. queries/10 has the full comparison.
 
-CYCLE SAFETY
-`path` accumulates visited process ids (not names, unlike the manual
-example -- ids are the correct guard since process names are not
-guaranteed unique). An upstream process already in `path` is not
-re-entered. `p_max_depth` (default 50) additionally caps recursion depth as
-a hard backstop.
+Untested: the seed data is a tree, so the guard has never actually fired.
 */
 
 /*
---- supply_chain_scaled_processes(start_process_id, target_amount, max_depth) ---
-The traversal itself. One row per process reachable upstream of the start
-process (including the start process, at depth 0), with the cumulative
-scaling factor needed to express that process's exchanges in terms of
-target_amount units of the start process's reference flow.
+One row per process reachable upstream, including the start at depth 0, with
+the factor needed to express its exchanges in terms of target_amount units of the
+start process's reference flow.
 
-Requires the start process to have a reference flow (is_reference_flow = TRUE
-exchange) -- if it doesn't, this returns zero rows, since there is no
-functional unit to scale against.
+Returns nothing if the start process has no reference flow (there is no functional
+unit to scale against).
 */
 CREATE OR REPLACE FUNCTION supply_chain_scaled_processes(
     p_start_process_id INT,
@@ -134,18 +120,16 @@ COMMENT ON FUNCTION supply_chain_scaled_processes(INT, NUMERIC, INT) IS
 
 
 /*
---- supply_chain_inventory(start_process_id, target_amount, max_depth) ---
-Aggregates elementary exchanges across the whole scaled chain into one row
-per elementary flow -- the cradle-to-gate LCI. Every contributing amount is
-converted into the flow's OWN default unit before summing (via
-convert_amount()), so a flow recorded in different units at different
-processes still aggregates into a single correct row instead of splitting
-across unit-specific rows.
+The cradle-to-gate inventory: every elementary exchange in the scaled chain,
+aggregated into one row per flow.
 
-skipped_unconvertible_count on a row means: this many of the contributing
-exchanges for this flow could not be converted into the flow's default unit
-and were excluded from total_amount. 0 in the common case (exchange unit
-already equals the flow's default unit).
+Each contribution is converted into the flow's own default unit before summing,
+so the same substance recorded in different units at different processes still
+lands in one row rather than splitting into several.
+
+skipped_unconvertible_count is how many contributions to that flow could not be
+converted and were left out of total_amount. Usually 0 (most exchanges already
+use their flow's default unit).
 */
 CREATE OR REPLACE FUNCTION supply_chain_inventory(
     p_start_process_id INT,
@@ -193,10 +177,12 @@ COMMENT ON FUNCTION supply_chain_inventory(INT, NUMERIC, INT) IS
 
 
 /*
---- calculate_cradle_to_gate_impacts(start_process_id, target_amount, max_depth) ---
-The §5.2/§5.4 bridge: runs the cradle-to-gate inventory through the same
-characterization logic as calculate_direct_impacts() (06_lcia_calculation.sql),
-instead of just one process's direct exchanges.
+The inventory above, characterized the same way calculate_direct_impacts() handles
+a single process.
+
+Read-only on purpose. A cradle-to-gate result depends on the target amount
+and depth it was computed with, and impact_results is keyed only on process
+and category (storing it there would lose the scope that makes the number mean anything).
 */
 CREATE OR REPLACE FUNCTION calculate_cradle_to_gate_impacts(
     p_start_process_id INT,
