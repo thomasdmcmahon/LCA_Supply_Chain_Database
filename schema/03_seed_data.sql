@@ -1,20 +1,21 @@
 /*
-- LCA Supply Chain Database
-- File: 03_seed_data.sql
-- Description: Minimal hand-crafted dataset for development and query testing.
+A small hand-written dataset: wheat farming, lorry transport, flour milling.
+Three processes, small enough that every number in a query result can be checked
+on paper.
 
-Models a simplified wheat flour supply chain:
     wheat farming -> lorry transport -> flour milling -> [1 kg flour]
 
-Values are illustrative only and are not real LCA data.
-Run after 01_create_tables.sql and 02_constraints.sql.
+Two things this is not. The exchange amounts are plausible but illustrative,
+not sourced LCA data. And the impact_results at the bottom are placeholders
+typed by hand. They were never derived from the exchanges above and the calculation
+engine cannot reproduce them (see queries/09_lcia_calculation_validation.sql for why).
+
+Run after 01_create_tables.sql and 02_constraints.sql. Not rerunnable: the unique
+constraints on geographies.code and units.name will reject a second run. Use make reset.
 */
 
 
--- =============================================================================
 -- GEOGRAPHIES
--- =============================================================================
-
 INSERT INTO geographies (code, name, is_global) VALUES
     ('GLO', 'Global',   TRUE),
     ('RER', 'Europe',   FALSE),
@@ -23,10 +24,8 @@ INSERT INTO geographies (code, name, is_global) VALUES
     ('DE',  'Germany',  FALSE);
 
 
--- =============================================================================
 -- UNITS
--- =============================================================================
-
+-- Conversion groups and factors are added later, in 05_unit_conversions.sql
 INSERT INTO units (name, dimension) VALUES
     ('kg',  'mass'),
     ('t',   'mass'),
@@ -34,22 +33,22 @@ INSERT INTO units (name, dimension) VALUES
     ('MJ',  'energy'),
     ('m3',  'volume'),
     ('tkm', 'transport'),   -- tonne-kilometre, standard transport unit in LCA
-    ('p',   'item'),        -- piece, for countable items
+    ('p',   'item'),
     ('m2',  'area');
 
 
--- =============================================================================
 -- CATEGORIES
--- Top-level categories first, then sub-categories referencing their parents.
--- =============================================================================
-
+-- Roots first, then children referencing them by id.
+--
+-- The parent ids below assume SERIAL starts at 1, which holds on a fresh
+-- volume. Same assumption applies to every hardcoded id in this file.
 INSERT INTO categories (name, parent_id, full_path) VALUES
     ('Agriculture',     NULL, 'Agriculture'),
     ('Transport',       NULL, 'Transport'),
     ('Food processing', NULL, 'Food processing'),
     ('Energy',          NULL, 'Energy');
 
--- Sub-categories (parent IDs: 1=Agriculture, 2=Transport, 3=Food processing, 4=Energy)
+-- 1=Agriculture, 2=Transport, 3=Food processing, 4=Energy
 INSERT INTO categories (name, parent_id, full_path) VALUES
     ('Crop farming',    1, 'Agriculture/Crop farming'),
     ('Road transport',  2, 'Transport/Road transport'),
@@ -57,11 +56,13 @@ INSERT INTO categories (name, parent_id, full_path) VALUES
     ('Electricity',     4, 'Energy/Electricity');
 
 
--- =============================================================================
 -- IMPACT CATEGORIES
--- Using CML 2002 as the characterization method.
--- =============================================================================
-
+-- Mostly CML 2002. CED is its own method, and the two are not comparable, which
+-- is why method is part of the identity (see uq_impact_categories_code_method).
+--
+-- 04_characterization_factors.sql adds a fifth, 'AE' under ILCD 2011, because
+-- the only acidification factors that could be sourced use that method and a
+-- different unit.
 INSERT INTO impact_categories (name, code, method, unit, description) VALUES
     (
         'Climate change',
@@ -92,14 +93,12 @@ INSERT INTO impact_categories (name, code, method, unit, description) VALUES
         'Total primary energy demand across all sources.'
     );
 
-
--- =============================================================================
 -- FLOWS
--- Product flows (internal technosphere exchanges) and
--- elementary flows (emissions and resources crossing the system boundary).
--- unit_id references: 1=kg, 2=t, 3=kWh, 4=MJ, 5=m3, 6=tkm
--- =============================================================================
-
+-- unit_id: 1=kg, 2=t, 3=kWh, 4=MJ, 5=m3, 6=tkm
+--
+-- Seed flows get no external_id. That is what distinguishes them from
+-- ELCD-loaded flows, and 04_characterization_factors.sql relies on it to
+-- match the right "Carbon dioxide, fossil" row.
 INSERT INTO flows (name, flow_type, unit_id, cas_number) VALUES
     -- Product flows
     ('Wheat grain, at farm',        'product',      1,  NULL),          -- id 1
@@ -116,13 +115,9 @@ INSERT INTO flows (name, flow_type, unit_id, cas_number) VALUES
     ('Phosphate, to water',         'elementary',   1,  '14265-44-2'),  -- id 10
     ('Water, river',                'elementary',   5,  NULL);          -- id 11
 
-
--- =============================================================================
 -- PROCESSES
--- category_id references: 5=Crop farming, 6=Road transport, 7=Milling
--- geography_id references: 2=RER (Europe)
--- =============================================================================
-
+-- category_id: 5=Crop farming, 6=Road transport, 7=Milling
+-- geography_id: 2=RER (Europe)
 INSERT INTO processes
     (name, description, category_id, geography_id, reference_year, source_dataset)
 VALUES
@@ -145,16 +140,17 @@ VALUES
         7, 2, 2020, 'Seed data (illustrative)'
     );
 
-
--- =============================================================================
 -- EXCHANGES
--- Links processes to flows with amounts and directions.
 -- process_id: 1=Wheat farming, 2=Transport, 3=Flour milling
--- flow_id references the flow IDs inserted above.
--- unit_id references: 1=kg, 3=kWh, 5=m3, 6=tkm
--- =============================================================================
-
--- PROCESS 1: Wheat farming (reference output: 1 kg wheat grain)
+--
+-- Every amount is per one unit of that process's reference flow.
+--
+-- Note where the chain ends: diesel and electricity are product inputs, but
+-- no process here declares them as its reference output, so the traversal
+-- stops at them. That boundary is deliberate (three processes are enough to
+-- show the pattern)
+--
+-- PROCESS 1: Wheat farming, per 1 kg wheat grain
 INSERT INTO exchanges
     (process_id, flow_id, direction, amount, unit_id, is_reference_flow, comment)
 VALUES
@@ -167,7 +163,7 @@ VALUES
     (1, 9,  'output', 0.0019,     1, FALSE, 'Nitrate leaching to groundwater (kg)'),
     (1, 10, 'output', 0.00014,    1, FALSE, 'Phosphate runoff to water (kg)');
 
--- PROCESS 2: Lorry transport (reference output: 1 tkm)
+-- PROCESS 2: Lorry transport, per 1 tkm
 INSERT INTO exchanges
     (process_id, flow_id, direction, amount, unit_id, is_reference_flow, comment)
 VALUES
@@ -176,7 +172,10 @@ VALUES
     (2, 6,  'output', 0.000095,   1, FALSE, 'CO2 from diesel combustion per tkm (kg)'),
     (2, 7,  'output', 0.00000062, 1, FALSE, 'NOx from combustion per tkm (kg)');
 
--- PROCESS 3: Flour milling (reference output: 1 kg wheat flour)
+-- PROCESS 3: Flour milling, per 1 kg wheat flour
+-- The two product inputs here are what the traversal resolves: 1.35 kg grain
+-- to wheat farming, 0.27 tkm to lorry transport. Those are the scaling factors
+-- supply_chain_processed() derives.
 INSERT INTO exchanges
     (process_id, flow_id, direction, amount, unit_id, is_reference_flow, comment)
 VALUES
@@ -186,14 +185,16 @@ VALUES
     (3, 5,  'input',  0.27,       6, FALSE, 'Transport of wheat to mill (tkm)'),
     (3, 6,  'output', 0.0000095,  1, FALSE, 'CO2 from minor on-site combustion (kg)');
 
-
--- =============================================================================
 -- IMPACT RESULTS
--- Illustrative LCIA scores per process per impact category.
 -- impact_category_id: 1=GWP100, 2=AP, 3=EP, 4=CED
--- ON CONFLICT allows this block to be re-run safely.
--- =============================================================================
-
+--
+-- Placeholders, not derived values. They assume background emissions that are
+-- not modelled as exchanges above (nitrous oxide from fertilizer breakdown, upstream
+-- energy production) so no calulcation over the visible data could arrive at them.
+--
+-- Kept because they give the query files something to join against before the engine exists.
+-- upsert_direct_impacts_for_all_processes() overwrites the ones it can compute (GWP100, EP)
+-- and leaves AP and CED untouched, since no characterization factors cover those.
 INSERT INTO impact_results
     (process_id, impact_category_id, value)
 VALUES
